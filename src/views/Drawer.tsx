@@ -125,23 +125,30 @@ function StageTargetCell({ stage, project, me }: { stage: StageId; project: Proj
   );
 }
 
-/** One sub-task row: toggle done, reassign, edit dates/effort. */
+/** One sub-task row: toggle done, reassign, edit dates/effort.
+ *  Management (reassign / remove / set expected date) is Product + Tech SPOC
+ *  + PMO only — same authority as creating one. Being in-court doesn't grant
+ *  it: a project can sit in Business's or QA's court while a sub-task Product
+ *  created stays untouched by them. The assignee, whoever's team they're on,
+ *  can still toggle their own item done and fill in their own promised
+ *  date/effort — that's normal self-service, not "management". Mirrors the
+ *  DB's s_upd/s_del exactly. */
 function SubtaskRow({ s, project, me }: { s: SubTask; project: Project; me: Person }) {
   const [reassigning, setReassigning] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const assignee = s.assigneeId ? PEOPLE_BY_ID[s.assigneeId] : undefined;
-  const editable = can("advance", me, project);
-  // Assignee can fill in their own promised date + effort; assigner can set expected date
   const isAssignee = s.assigneeId === me.id;
-  const canEditExpected = editable; // assigner (team in court)
-  const canEditPromised = isAssignee || me.role === "pmo"; // assignee or PMO
+  const canManage = canCreateSubtask(me); // product / tech_spoc / pmo
+  const canToggle = canManage || isAssignee;
+  const canEditExpected = canManage; // assigner sets the target
+  const canEditPromised = isAssignee || me.role === "pmo"; // assignee sets their own
 
   function patch(p: SubtaskPatch) { updateSubtask(project.id, s.id, p); }
 
   return (
     <div style={{ borderRadius: 9, border: expanded ? "1px solid var(--line)" : "none" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 9px" }}>
-        <button disabled={!editable} onClick={() => toggleSubtask(project.id, s.id)}
+        <button disabled={!canToggle} onClick={() => toggleSubtask(project.id, s.id)}
           style={{ display: "flex", alignItems: "center", gap: 9, flex: 1, minWidth: 0, textAlign: "left" }}>
           {s.done ? <CheckCircle2 size={16} color="var(--pop)" /> : <Circle size={16} color="var(--ink-mute)" />}
           <span style={{ fontSize: 13, textDecoration: s.done ? "line-through" : "none", color: s.done ? "var(--ink-mute)" : "var(--ink)", flex: 1, minWidth: 0 }}>{s.title}</span>
@@ -164,11 +171,11 @@ function SubtaskRow({ s, project, me }: { s: SubTask; project: Project; me: Pers
             {PEOPLE.filter((p) => p.role !== "leadership").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         ) : (
-          <button disabled={!editable} onClick={() => setReassigning(true)} title={assignee ? assignee.name : "Unassigned — click to assign"} style={{ display: "flex", flex: "none" }}>
+          <button disabled={!canManage} onClick={() => setReassigning(true)} title={assignee ? assignee.name : "Unassigned — click to assign"} style={{ display: "flex", flex: "none" }}>
             {assignee ? <Avatar id={assignee.id} size={20} /> : <span className="chip" style={{ fontSize: 10 }}>{TEAMS[s.team].short}</span>}
           </button>
         )}
-        {editable && (
+        {canManage && (
           <button className="icon-btn" style={{ width: 24, height: 24, flex: "none" }} title="Remove sub-task" onClick={() => removeSubtask(project.id, s.id)}>
             <X size={12} />
           </button>

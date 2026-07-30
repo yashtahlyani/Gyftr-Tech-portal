@@ -291,10 +291,13 @@ create trigger trg_enforce_update before update on projects
 -- PMO, or (own row only) the assignee filling in their own promised date/effort.
 create policy s_sel on subtasks for select using ( can_see(project_id) );
 create policy s_ins on subtasks for insert with check ( is_pmo() or my_team() in ('product', 'tech_spoc') );
+-- Managing a sub-task (reassign/edit/delete) is Product + Tech SPOC + PMO
+-- only — same authority as creating one, NOT "whoever's team holds court".
+-- The assignee always keeps the ability to toggle/update their own item.
 create policy s_upd on subtasks for update
-  using ( can_act(project_id) or assignee_id = (select id from people where auth_id = auth.uid()) )
-  with check ( can_act(project_id) or assignee_id = (select id from people where auth_id = auth.uid()) );
-create policy s_del on subtasks for delete using ( can_act(project_id) or is_pmo() );
+  using ( is_pmo() or my_team() in ('product','tech_spoc') or assignee_id = (select id from people where auth_id = auth.uid()) )
+  with check ( is_pmo() or my_team() in ('product','tech_spoc') or assignee_id = (select id from people where auth_id = auth.uid()) );
+create policy s_del on subtasks for delete using ( is_pmo() or my_team() in ('product','tech_spoc') );
 
 -- Stage targets: only the team that OWNS a given stage may set/update that
 -- stage's expected date (not any involved team — Business doesn't get to set
