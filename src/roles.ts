@@ -121,6 +121,16 @@ export function canEditStageTarget(me: Person, proj: Project, stage: StageId): b
   return true;
 }
 
+/** May actually attach a document — mirrors the DB's a_ins exactly: in-court
+ *  (or PMO), or your team is already part of the project's story. Narrower
+ *  than commenting, which everyone (even read-only leadership) may do —
+ *  visibility alone isn't enough to write here, unlike a comment. */
+export function canAddAttachment(me: Person, proj: Project): boolean {
+  if (isReadOnly(me)) return false;
+  if (me.role === "pmo") return true;
+  return ownerTeam(proj) === me.team || teamsInvolved(proj).has(me.team);
+}
+
 /** Lead (or any member) of a team, to hand the ball to. */
 export function leadOf(team: string): string {
   const lead = PEOPLE.find((p) => p.team === team && p.role === "lead");

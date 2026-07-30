@@ -22,7 +22,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
     </div>
   );
 }
-import { can, canPerformTransition, canCreateSubtask, canEditStageTarget, isOverseer, ownerTeam, ownerForTransition } from "../roles";
+import { can, canPerformTransition, canCreateSubtask, canEditStageTarget, canAddAttachment, isOverseer, ownerTeam, ownerForTransition } from "../roles";
 import { PEOPLE, PEOPLE_BY_ID } from "../people";
 import { daysBetween, relTime, fmtDate } from "../lib";
 import type { SubtaskPatch } from "../cloudStore";
@@ -598,7 +598,7 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
               })}
               {project.attachments.length === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-mute)" }}>No documents attached yet.</div>}
             </div>
-            {can("comment", me, project) && (
+            {canAddAttachment(me, project) && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 9 }}>
                 <select className="select sm" value={attachKind} onChange={(e) => setAttachKind(e.target.value as DocKind)}>
                   {DOC_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
