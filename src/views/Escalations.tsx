@@ -1,11 +1,13 @@
 import { useMemo } from "react";
-import { ShieldCheck, Ban, AlertOctagon, Flame, Star } from "lucide-react";
+import { ShieldCheck, Ban, AlertOctagon, Flame, Star, Clock } from "lucide-react";
 import type { Project } from "../types";
 import { STAGE_BY_ID, TEAMS, aging } from "../workflow";
-import { daysBetween, overdueInfo } from "../lib";
+import { daysBetween, overdueInfo, fmtDate } from "../lib";
 import { ownerTeam, openLeadershipNote } from "../roles";
 import { PEOPLE_BY_ID } from "../people";
 import { Avatar, StatusPill, AgingChip, OverdueTag } from "../ui";
+
+const TODAY = new Date().toISOString().slice(0, 10);
 
 export function Escalations({ projects, onOpen }: { projects: Project[]; onOpen: (id: string) => void }) {
   const rows = useMemo(() => {
@@ -15,8 +17,10 @@ export function Escalations({ projects, onOpen }: { projects: Project[]; onOpen:
         const breach = aging(daysBetween(p.stageEnteredAt), STAGE_BY_ID[p.stage].slaDays) === "breach";
         const od = overdueInfo(p.sacrosanctGoLive, p.targetGoLive, false).overdue;
         const ceo = openLeadershipNote(p);
-        const score = (ceo ? 8 : 0) + (p.blocked ? 4 : 0) + (od ? 2 : 0) + (breach ? 1 : 0);
-        return { p, breach, od, ceo, score };
+        const stageTarget = p.stageTargets[p.stage];
+        const stageOverdue = !!stageTarget && stageTarget < TODAY;
+        const score = (ceo ? 8 : 0) + (p.blocked ? 4 : 0) + (od ? 2 : 0) + (stageOverdue ? 2 : 0) + (breach ? 1 : 0);
+        return { p, breach, od, ceo, stageOverdue, stageTarget, score };
       })
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score || daysBetween(b.p.stageEnteredAt) - daysBetween(a.p.stageEnteredAt));
@@ -39,7 +43,7 @@ export function Escalations({ projects, onOpen }: { projects: Project[]; onOpen:
           <tr><th>Project</th><th>Owner (who to chase)</th><th>Flags</th><th>In stage</th><th>Reason / block</th></tr>
         </thead>
         <tbody>
-          {rows.map(({ p, breach, od, ceo }) => (
+          {rows.map(({ p, breach, od, ceo, stageOverdue, stageTarget }) => (
             <tr key={p.id} onClick={() => onOpen(p.id)}>
               <td>
                 <div style={{ fontWeight: 600 }}><span className="mono" style={{ color: "var(--ink-mute)", fontSize: 11, marginRight: 8 }}>{p.code}</span>{p.title}</div>
@@ -57,13 +61,17 @@ export function Escalations({ projects, onOpen }: { projects: Project[]; onOpen:
                   {ceo && <span className="pill" style={{ background: "var(--gold-bg)", color: "var(--gold-fg)" }}><Star size={11} fill="currentColor" /> CEO</span>}
                   {p.blocked && <span className="pill" style={{ background: "var(--rose-bg)", color: "var(--rose-fg)" }}><Ban size={11} /> Blocked</span>}
                   {od && <span className="pill" style={{ background: "var(--amber-bg)", color: "var(--amber-fg)" }}><AlertOctagon size={11} /> Overdue</span>}
+                  {stageOverdue && <span className="pill" style={{ background: "var(--rose-bg)", color: "var(--rose-fg)" }}><Clock size={11} /> {STAGE_BY_ID[p.stage].label} overdue</span>}
                   {breach && <span className="pill" style={{ background: "var(--rose-bg)", color: "var(--rose-fg)" }}><Flame size={11} /> SLA</span>}
                 </div>
               </td>
               <td><AgingChip project={p} /></td>
               <td style={{ fontSize: 12.5, color: "var(--ink-soft)", maxWidth: 300 }}>
                 {ceo ? p.comments.filter((c) => c.pinned && !c.resolved).slice(-1)[0]?.text
-                  : p.blocked ? p.blockReason : od ? <OverdueTag project={p} /> : "Over SLA in stage"}
+                  : p.blocked ? p.blockReason
+                  : od ? <OverdueTag project={p} />
+                  : stageOverdue ? `${STAGE_BY_ID[p.stage].label} was due ${fmtDate(stageTarget ?? null)}`
+                  : "Over SLA in stage"}
               </td>
             </tr>
           ))}

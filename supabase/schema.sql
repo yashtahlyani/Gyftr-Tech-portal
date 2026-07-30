@@ -296,13 +296,54 @@ create policy s_upd on subtasks for update
   with check ( can_act(project_id) or assignee_id = (select id from people where auth_id = auth.uid()) );
 create policy s_del on subtasks for delete using ( can_act(project_id) or is_pmo() );
 
--- Stage targets: any team that's ever been involved (not just whoever
--- currently holds the court) may set/update a stage's expected date — e.g.
--- Business pencils in an expected QA-done date well before QA even starts.
+-- Stage targets: only the team that OWNS a given stage may set/update that
+-- stage's expected date (not any involved team — Business doesn't get to set
+-- QA's date). PMO can always act.
 create policy st_sel on stage_targets for select using ( can_see(project_id) );
 create policy st_wr  on stage_targets for all
-  using ( is_pmo() or exists ( select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams) ) )
-  with check ( is_pmo() or exists ( select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams) ) );
+  using ( is_pmo() or my_team() = stage_owner(stage) )
+  with check ( is_pmo() or my_team() = stage_owner(stage) );
+
+-- Dates fill in sequentially, stage by stage, in pipeline order — never out
+-- of order. stage_id's declared enum order IS the pipeline order (intake <
+-- scoping < ... < live), so stages compare directly with < .
+-- SECURITY DEFINER: without it, this function's own lookups run as the
+-- calling user and are themselves subject to st_sel/can_see RLS — e.g.
+-- Product setting Scoping's date can't see Business's already-set Intake
+-- date (Product isn't in involved_teams until the project reaches Scoping),
+-- so the "is the previous stage already set" check would incorrectly say no.
+create or replace function enforce_stage_target_order() returns trigger language plpgsql security definer as $$
+declare
+  missing_stage stage_id;
+  max_prev_date date;
+begin
+  if new.expected_date is null then
+    return new; -- clearing a date is always allowed
+  end if;
+  select s into missing_stage
+    from unnest(enum_range(null::stage_id)) as s
+   where s < new.stage
+     and s not in (
+       select stage from stage_targets
+        where project_id = new.project_id and stage != new.stage and expected_date is not null
+     )
+   limit 1;
+  if missing_stage is not null then
+    raise exception 'Set % expected date before %', missing_stage, new.stage;
+  end if;
+
+  select max(expected_date) into max_prev_date
+    from stage_targets
+   where project_id = new.project_id and stage < new.stage;
+  if max_prev_date is not null and new.expected_date < max_prev_date then
+    raise exception 'Expected date must be on or after the previous stage''s date (%)', max_prev_date;
+  end if;
+
+  return new;
+end;
+$$;
+create trigger trg_stage_target_order before insert or update of expected_date on stage_targets
+  for each row execute function enforce_stage_target_order();
 
 create policy h_sel on stage_history for select using ( can_see(project_id) );
 -- NOT can_act(project_id): a transition fires the projects UPDATE and this

@@ -1,5 +1,5 @@
 /* ─── Roles, visibility scoping & permissions ─── */
-import type { Person, Project, TeamId, ViewKey } from "./types";
+import type { Person, Project, StageId, TeamId, ViewKey } from "./types";
 import { STAGES, STAGE_ORDER, STAGE_BY_ID, type TransitionSpec } from "./workflow";
 import { PEOPLE } from "./people";
 
@@ -106,13 +106,19 @@ export function canCreateSubtask(me: Person): boolean {
   return me.role === "pmo" || me.team === "product" || me.team === "tech_spoc";
 }
 
-/** Who may set/edit a stage's expected date — any team that's ever been
- *  involved with the project (not just whoever's currently in court), so
- *  e.g. Business can pencil in an expected QA-done date ahead of time.
- *  Mirrors the DB's st_wr policy. Leadership never writes, per usual. */
-export function canEditStageTarget(me: Person, proj: Project): boolean {
+/** Who may set/edit a given STAGE's expected date — only the team that owns
+ *  that specific stage (or PMO), and only once every earlier stage already
+ *  has its own date set. Dates fill in sequentially, stage by stage, in
+ *  pipeline order — never out of order, never by an unrelated team. Mirrors
+ *  the DB's st_wr policy + trg_stage_target_order exactly. */
+export function canEditStageTarget(me: Person, proj: Project, stage: StageId): boolean {
   if (isReadOnly(me)) return false;
-  return me.role === "pmo" || teamsInvolved(proj).has(me.team);
+  if (me.role !== "pmo" && STAGE_BY_ID[stage].owner !== me.team) return false;
+  const idx = STAGE_ORDER.indexOf(stage);
+  for (let i = 0; i < idx; i++) {
+    if (!proj.stageTargets[STAGE_ORDER[i]]) return false;
+  }
+  return true;
 }
 
 /** Lead (or any member) of a team, to hand the ball to. */

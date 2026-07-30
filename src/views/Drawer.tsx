@@ -89,12 +89,18 @@ function ForwardPicker({ forwards, me, onFire }: { forwards: TransitionSpec[]; m
 
 /** One stage's expected date, in the pipeline rail — click to edit. Replaces
  *  the single overall-status view with a per-stage timeline (expected pickup
- *  date, expected dev-done date, etc.), each independently settable. */
+ *  date, expected dev-done date, etc.). Dates fill in sequentially: only the
+ *  team that owns THIS stage can set it, and only once every earlier stage
+ *  already has its own date — mirrors the DB exactly, so a click here never
+ *  produces a write the server would reject. */
 function StageTargetCell({ stage, project, me }: { stage: StageId; project: Project; me: Person }) {
   const [editing, setEditing] = useState(false);
   const value = project.stageTargets[stage];
-  const editable = canEditStageTarget(me, project);
+  const isOwningTeam = me.role === "pmo" || STAGE_BY_ID[stage].owner === me.team;
+  const editable = canEditStageTarget(me, project, stage);
+  const waitingOnEarlier = isOwningTeam && !editable;
   const save = (v: string) => { setStageTarget(project.id, stage, me.id, v || null); setEditing(false); };
+
   if (editing) {
     return (
       <input
@@ -104,12 +110,17 @@ function StageTargetCell({ stage, project, me }: { stage: StageId; project: Proj
       />
     );
   }
+  const title = editable
+    ? "Set expected date"
+    : waitingOnEarlier
+      ? "Set the earlier stages' dates first — they fill in order"
+      : !isOwningTeam
+        ? `Only ${TEAMS[STAGE_BY_ID[stage].owner].label} sets this stage's date`
+        : undefined;
   return (
-    <button
-      disabled={!editable} onClick={() => setEditing(true)} title={editable ? "Set expected date" : undefined}
-      style={{ fontSize: 11, fontFamily: "var(--font-m)", color: value ? "var(--ink-soft)" : "var(--ink-mute)" }}
-    >
-      {value ? fmtDate(value) : editable ? "Set date" : "—"}
+    <button disabled={!editable} onClick={() => setEditing(true)} title={title}
+      style={{ fontSize: 11, fontFamily: "var(--font-m)", color: value ? "var(--ink-soft)" : "var(--ink-mute)" }}>
+      {value ? fmtDate(value) : editable ? "Set date" : waitingOnEarlier ? "Waiting…" : "—"}
     </button>
   );
 }
@@ -227,6 +238,8 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
   const idx = STAGE_ORDER.indexOf(project.stage);
   const owner = PEOPLE_BY_ID[project.ownerId];
   const oTeam = ownerTeam(project);
+  const currentStageTarget = project.stage === "live" ? undefined : project.stageTargets[project.stage];
+  const currentStageOverdue = !!currentStageTarget && currentStageTarget < new Date().toISOString().slice(0, 10);
   const done = project.subtasks.filter((s) => s.done).length;
   const subtaskPct = project.subtasks.length ? Math.round((done / project.subtasks.length) * 100) : 0;
   const sortedSubtasks = [...project.subtasks].sort((a, b) => Number(a.done) - Number(b.done) || (a.createdAt ?? 0) - (b.createdAt ?? 0));
@@ -309,6 +322,11 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{owner?.name}</div>
                 <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>{TEAMS[oTeam].label} · assigned {relTime(project.stageEnteredAt)} · {daysBetween(project.stageEnteredAt)}d in {STAGE_BY_ID[project.stage].label}</div>
+                {currentStageTarget && (
+                  <div style={{ fontSize: 11.5, marginTop: 2, color: currentStageOverdue ? "var(--rose-fg)" : "var(--ink-mute)", fontWeight: currentStageOverdue ? 700 : 400 }}>
+                    {currentStageOverdue ? "Overdue — " : "Due "}{STAGE_BY_ID[project.stage].label} by <span className="mono">{fmtDate(currentStageTarget)}</span>
+                  </div>
+                )}
               </div>
               {can("assign", me, project) && !reassignOpen && (
                 <div style={{ display: "flex", gap: 6, flex: "none" }}>
