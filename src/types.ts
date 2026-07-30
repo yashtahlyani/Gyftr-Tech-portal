@@ -100,7 +100,8 @@ export interface Project {
   code: string;               // TP-001
   title: string;
   brd: string;                // business requirement / description
-  partner: string;            // brand / partner
+  partner: string;            // partner company
+  brand: string | null;       // specific brand under that partner
   lob: string;                // line of business
   priority: Priority;
   bifurcation: "B2B" | "B2C";
@@ -131,6 +132,10 @@ export interface Project {
   history: HistoryEntry[];
   comments: Comment[];
   attachments: Attachment[];
+  /** Expected date per pipeline stage — e.g. "expected pickup date", "expected
+   *  dev-done date" — so project details show a full timeline, not just the
+   *  one overall status. Keyed by StageId; absent stage = no target set yet. */
+  stageTargets: Partial<Record<StageId, string>>;
 }
 
 export type ViewKey = "overview" | "board" | "list" | "escalations" | "queue" | "team";

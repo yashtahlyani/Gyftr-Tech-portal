@@ -30,7 +30,7 @@ export const STAGES: StageMeta[] = [
   { id: "to_be_picked",  label: "To Be Picked",    owner: "tech_spoc",   slaDays: 3,  defaultStatus: "to_be_picked",           color: "#7C8896" },
   { id: "development",   label: "Development",     owner: "development", slaDays: 12, defaultStatus: "dev",                    color: "#C79A3E" },
   { id: "qa",            label: "QA",              owner: "qa",          slaDays: 5,  defaultStatus: "qa",                     color: "#2E9E86" },
-  { id: "uat",           label: "UAT",             owner: "business",    slaDays: 4,  defaultStatus: "uat",                    color: "#6FA23C" },
+  { id: "uat",           label: "UAT",             owner: "product",     slaDays: 4,  defaultStatus: "uat",                    color: "#6FA23C" },
   { id: "pre_prod",      label: "Pending Deploy",  owner: "development", slaDays: 2,  defaultStatus: "pending_prod_deployment", color: "#4C8A1E" },
   { id: "live",          label: "Live",            owner: "leadership",  slaDays: 999, defaultStatus: "live",                  color: "#62A92A" },
 ];
@@ -67,7 +67,7 @@ export const TRANSITIONS: Record<StageId, TransitionSpec[]> = {
     { to: "scoping", label: "Ask Product (clarify)", toStatus: "tech_clarification_pending", ownerTeam: "product", kind: "back" },
   ],
   qa: [
-    { to: "uat", label: "Pass to UAT", toStatus: "uat", ownerTeam: "business", kind: "forward" },
+    { to: "uat", label: "Pass to UAT", toStatus: "uat", ownerTeam: "product", kind: "forward" },
     { to: "development", label: "Reject to Dev (bug)", toStatus: "need_bug_fixing", ownerTeam: "development", kind: "reject" },
   ],
   uat: [

@@ -78,6 +78,7 @@ export default function App() {
 
   const lobs = useMemo(() => [...new Set(projects.map((p) => p.lob))].sort(), [projects]);
   const partners = useMemo(() => [...new Set(projects.map((p) => p.partner))].sort(), [projects]);
+  const brands = useMemo(() => [...new Set(projects.map((p) => p.brand).filter((b): b is string => !!b))].sort(), [projects]);
   const myProjectCount = useMemo(() => (me ? projects.filter((p) => isMine(me, p)).length : 0), [projects, me]);
   const mySubCount = useMemo(() => (me ? projects.flatMap((p) => p.subtasks.filter((s) => s.assigneeId === me.id && !s.done)).length : 0), [projects, me]);
   const myCount = myProjectCount + mySubCount;
@@ -176,7 +177,7 @@ export default function App() {
               {can("create", me) && <button className="btn primary" onClick={() => setCreating(true)}><Plus size={15} /> New project</button>}
             </div>
 
-            {showFilters && <FilterBar filters={filters} setFilters={setFilters} lobs={lobs} partners={partners} />}
+            {showFilters && <FilterBar filters={filters} setFilters={setFilters} lobs={lobs} partners={partners} brands={brands} />}
 
             <div className="content">
               {active === "queue" && <MyQueue projects={projects} me={me} onOpen={setOpenId} />}
@@ -190,7 +191,7 @@ export default function App() {
         )}
       </main>
 
-      {creating && <CreateModal meId={me.id} onClose={(id) => { setCreating(false); if (id) setOpenId(id); }} />}
+      {creating && <CreateModal meId={me.id} partners={partners} brands={brands} onClose={(id) => { setCreating(false); if (id) setOpenId(id); }} />}
       <Toasts />
     </div>
   );

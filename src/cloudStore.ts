@@ -19,7 +19,7 @@ function writeFailed(what: string, message: string) {
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-const SELECT = "*, subtasks(*), stage_history(*), comments(*), attachments(*)";
+const SELECT = "*, subtasks(*), stage_history(*), comments(*), attachments(*), stage_targets(*)";
 
 function mapSubtask(r: Row): SubTask {
   return {
@@ -39,9 +39,14 @@ function mapComment(r: Row): Comment {
 function mapAttachment(r: Row): Attachment {
   return { id: r.id, name: r.name, kind: r.kind as DocKind, url: r.url ?? undefined, byId: r.by_id, at: Date.parse(r.at) };
 }
+function mapStageTargets(rows: Row[]): Partial<Record<StageId, string>> {
+  const out: Partial<Record<StageId, string>> = {};
+  for (const r of rows) out[r.stage as StageId] = r.expected_date;
+  return out;
+}
 function mapProject(r: Row): Project {
   return {
-    id: r.id, code: r.code, title: r.title, brd: r.brd ?? "", partner: r.partner, lob: r.lob ?? "",
+    id: r.id, code: r.code, title: r.title, brd: r.brd ?? "", partner: r.partner, brand: r.brand ?? null, lob: r.lob ?? "",
     priority: r.priority, bifurcation: r.bifurcation ?? "B2C",
     stage: r.stage, status: r.status, ownerId: r.owner_id, businessOwnerId: r.business_owner_id,
     blocked: r.blocked, blockReason: r.block_reason ?? undefined,
@@ -54,6 +59,7 @@ function mapProject(r: Row): Project {
     history: (r.stage_history ?? []).map(mapHistory).sort((a: HistoryEntry, b: HistoryEntry) => a.at - b.at),
     comments: (r.comments ?? []).map(mapComment).sort((a: Comment, b: Comment) => a.at - b.at),
     attachments: (r.attachments ?? []).map(mapAttachment).sort((a: Attachment, b: Attachment) => a.at - b.at),
+    stageTargets: mapStageTargets(r.stage_targets ?? []),
   };
 }
 
@@ -143,7 +149,7 @@ export function transition(id: string, byId: string, spec: { to: StageId; toStat
 /** Sheet-parity planning fields — editable from the project page's Details rail. */
 export type DetailsPatch = Partial<Pick<Project,
   "priorityMonth" | "timelineEta" | "devEffortDays" | "reasonForDelay" |
-  "productSpocId" | "techLeadId" | "targetGoLive" | "sacrosanctGoLive">>;
+  "productSpocId" | "techLeadId" | "targetGoLive" | "sacrosanctGoLive" | "brand">>;
 
 export function updateDetails(id: string, patch: DetailsPatch) {
   localPatch(id, patch);
@@ -156,7 +162,20 @@ export function updateDetails(id: string, patch: DetailsPatch) {
   if ("techLeadId" in patch) row.tech_lead_id = patch.techLeadId ?? null;
   if ("targetGoLive" in patch) row.target_go_live = patch.targetGoLive ?? null;
   if ("sacrosanctGoLive" in patch) row.sacrosanct_go_live = patch.sacrosanctGoLive ?? null;
+  if ("brand" in patch) row.brand = patch.brand ?? null;
   patchProject(id, row);
+}
+
+/** Per-stage expected date, upserted (one row per project+stage). */
+export function setStageTarget(id: string, stage: StageId, byId: string, expectedDate: string | null) {
+  const p = findProject(id); if (!p) return;
+  localPatch(id, { stageTargets: { ...p.stageTargets, [stage]: expectedDate ?? undefined } });
+  if (!supabase) return;
+  supabase.from("stage_targets")
+    .upsert({ project_id: id, stage, expected_date: expectedDate, updated_by: byId, updated_at: new Date().toISOString() }, { onConflict: "project_id,stage" })
+    .then(({ error }) => {
+      if (error) writeFailed("Stage date didn't save", error.message);
+    });
 }
 
 export function setStatus(id: string, toStatus: StatusId, byId: string) {
@@ -285,13 +304,13 @@ export function reassignSubtask(id: string, subId: string, assigneeId: string | 
 }
 
 export async function createProject(
-  input: Omit<Project, "id" | "code" | "createdAt" | "stageEnteredAt" | "finalGoLive" | "history" | "comments" | "subtasks" | "attachments"> & { subtasks?: SubTask[] }
+  input: Omit<Project, "id" | "code" | "createdAt" | "stageEnteredAt" | "finalGoLive" | "history" | "comments" | "subtasks" | "attachments" | "stageTargets"> & { subtasks?: SubTask[] }
 ): Promise<Project> {
   if (!supabase) throw new Error("Cloud mode is off.");
   const { data, error } = await supabase
     .from("projects")
     .insert({
-      title: input.title, brd: input.brd, partner: input.partner, lob: input.lob,
+      title: input.title, brd: input.brd, partner: input.partner, brand: input.brand, lob: input.lob,
       priority: input.priority, bifurcation: input.bifurcation, stage: input.stage, status: input.status,
       owner_id: input.ownerId, business_owner_id: input.businessOwnerId,
       blocked: input.blocked, block_reason: input.blockReason ?? null,

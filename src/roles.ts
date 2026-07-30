@@ -99,6 +99,22 @@ export function canPerformTransition(me: Person, proj: Project, spec: Transition
   return can("advance", me, proj);
 }
 
+/** Sub-tasks are created only by Product / Tech SPOC (they scope the work) —
+ *  everyone else can still see and act on the sub-tasks assigned to them,
+ *  just not author new ones. Mirrors the DB's s_ins policy. */
+export function canCreateSubtask(me: Person): boolean {
+  return me.role === "pmo" || me.team === "product" || me.team === "tech_spoc";
+}
+
+/** Who may set/edit a stage's expected date — any team that's ever been
+ *  involved with the project (not just whoever's currently in court), so
+ *  e.g. Business can pencil in an expected QA-done date ahead of time.
+ *  Mirrors the DB's st_wr policy. Leadership never writes, per usual. */
+export function canEditStageTarget(me: Person, proj: Project): boolean {
+  if (isReadOnly(me)) return false;
+  return me.role === "pmo" || teamsInvolved(proj).has(me.team);
+}
+
 /** Lead (or any member) of a team, to hand the ball to. */
 export function leadOf(team: string): string {
   const lead = PEOPLE.find((p) => p.team === team && p.role === "lead");

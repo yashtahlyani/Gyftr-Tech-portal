@@ -57,6 +57,9 @@ export function updateSubtask(...args: Parameters<typeof local.updateSubtask>) {
 export function updateDetails(...args: Parameters<typeof local.updateDetails>) {
   return isCloud ? cloud.updateDetails(...args) : local.updateDetails(...args);
 }
+export function setStageTarget(...args: Parameters<typeof local.setStageTarget>) {
+  return isCloud ? cloud.setStageTarget(...args) : local.setStageTarget(...args);
+}
 export function createProject(...args: Parameters<typeof local.createProject>): Promise<Project> {
   return isCloud ? cloud.createProject(...args) : Promise.resolve(local.createProject(...args));
 }

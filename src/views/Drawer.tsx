@@ -3,14 +3,14 @@ import {
   ArrowLeft, ArrowRight, Send, CheckCircle2, Circle, Ban, MessageSquare,
   Paperclip, Plus, Lock, CornerUpLeft, RotateCcw, Hand, Star, ExternalLink, Check, X, Repeat, UserCheck,
 } from "lucide-react";
-import type { Person, Project, StatusId, DocKind, TeamId, SubTask } from "../types";
+import type { Person, Project, StatusId, StageId, DocKind, TeamId, SubTask } from "../types";
 import {
   STAGES, STAGE_BY_ID, STAGE_ORDER, STATUSES, statusesForStage, TEAMS, TRANSITIONS,
   type TransitionSpec,
 } from "../workflow";
 import {
   transition, setStatus, setBlock, addComment, toggleSubtask, addSubtask, removeSubtask, reassignSubtask,
-  reassign, addAttachment, resolveNote, updateDetails, updateSubtask,
+  reassign, addAttachment, resolveNote, updateDetails, updateSubtask, setStageTarget,
 } from "../store";
 
 /** One label/value row in the Details rail. */
@@ -22,7 +22,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
     </div>
   );
 }
-import { can, canPerformTransition, isOverseer, ownerTeam, ownerForTransition } from "../roles";
+import { can, canPerformTransition, canCreateSubtask, canEditStageTarget, isOverseer, ownerTeam, ownerForTransition } from "../roles";
 import { PEOPLE, PEOPLE_BY_ID } from "../people";
 import { daysBetween, relTime, fmtDate } from "../lib";
 import type { SubtaskPatch } from "../cloudStore";
@@ -84,6 +84,33 @@ function ForwardPicker({ forwards, me, onFire }: { forwards: TransitionSpec[]; m
         {selected.spec.label} <ArrowRight size={14} />
       </button>
     </div>
+  );
+}
+
+/** One stage's expected date, in the pipeline rail — click to edit. Replaces
+ *  the single overall-status view with a per-stage timeline (expected pickup
+ *  date, expected dev-done date, etc.), each independently settable. */
+function StageTargetCell({ stage, project, me }: { stage: StageId; project: Project; me: Person }) {
+  const [editing, setEditing] = useState(false);
+  const value = project.stageTargets[stage];
+  const editable = canEditStageTarget(me, project);
+  const save = (v: string) => { setStageTarget(project.id, stage, me.id, v || null); setEditing(false); };
+  if (editing) {
+    return (
+      <input
+        type="date" className="input mono" autoFocus style={{ padding: "2px 6px", fontSize: 11, width: 122 }}
+        defaultValue={value ?? ""} onBlur={(e) => save(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") save((e.target as HTMLInputElement).value); if (e.key === "Escape") setEditing(false); }}
+      />
+    );
+  }
+  return (
+    <button
+      disabled={!editable} onClick={() => setEditing(true)} title={editable ? "Set expected date" : undefined}
+      style={{ fontSize: 11, fontFamily: "var(--font-m)", color: value ? "var(--ink-soft)" : "var(--ink-mute)" }}
+    >
+      {value ? fmtDate(value) : editable ? "Set date" : "—"}
+    </button>
   );
 }
 
@@ -264,6 +291,7 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
         <h1 style={{ margin: "9px 0 8px", fontSize: 21, fontFamily: "var(--font-d)", letterSpacing: "-.01em" }}>{project.title}</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span className="chip">{project.partner}</span>
+          {project.brand && <span className="chip">{project.brand}</span>}
           <span className="chip">{project.lob}</span>
           <StatusPill status={project.status} />
           <AgingChip project={project} />
@@ -405,7 +433,7 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
               {sortedSubtasks.map((s) => <SubtaskRow key={s.id} s={s} project={project} me={me} />)}
               {project.subtasks.length === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-mute)" }}>No sub-tasks yet.</div>}
             </div>
-            {can("advance", me, project) && (
+            {canCreateSubtask(me) && (
               <div style={{ display: "flex", gap: 8, marginTop: 9, flexWrap: "wrap" }}>
                 <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="New sub-task…" value={subTitle} onChange={(e) => setSubTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSub()} />
                 <select className="select" style={{ maxWidth: 130 }} value={subTeam} onChange={(e) => { setSubTeam(e.target.value as TeamId); setSubAssignee(""); }}>
@@ -453,7 +481,7 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
             <div className="section-title">Pipeline</div>
             <div className="stepper" style={{ flexDirection: "column", alignItems: "flex-start", gap: 10 }}>
               {STAGES.map((s, i) => (
-                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
                   <span className={`node ${i < idx ? "done" : i === idx ? "current" : ""}`}
                     style={{
                       width: 22, height: 22, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 9.5,
@@ -463,7 +491,8 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
                     }}>
                     {i < idx ? "✓" : i + 1}
                   </span>
-                  <span style={{ fontSize: 12, fontWeight: i === idx ? 700 : 550, color: i === idx ? "var(--ink)" : "var(--ink-mute)" }}>{s.label}</span>
+                  <span style={{ fontSize: 12, fontWeight: i === idx ? 700 : 550, color: i === idx ? "var(--ink)" : "var(--ink-mute)", flex: 1, minWidth: 0 }}>{s.label}</span>
+                  <StageTargetCell stage={s.id} project={project} me={me} />
                 </div>
               ))}
             </div>

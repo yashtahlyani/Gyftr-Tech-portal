@@ -15,10 +15,11 @@ export const PEOPLE: Person[] = [
   { id: "u_yash",     name: "Yash Tahlyani", team: "product",     role: "member",     email: "yash.tahlyani@gyftr.net" },
   // ── Tech SPOC (managers) ──
   { id: "u_rajneesh", name: "Rajneesh",      team: "tech_spoc",   role: "pmo",        email: "rajneesh@gyftr.net" },     // CTO — sees everything
-  { id: "u_harshita", name: "Harshita",      team: "tech_spoc",   role: "lead",       email: "harshita@gyftr.net" },     // Tech Manager 1
-  { id: "u_mgr2",     name: "Deepak",        team: "tech_spoc",   role: "lead",       email: "deepak@gyftr.net" },       // Tech Manager 2
-  { id: "u_mgr3",     name: "Sameer",        team: "tech_spoc",   role: "lead",       email: "sameer@gyftr.net" },       // Tech Manager 3
-  { id: "u_mgr4",     name: "Pankaj",        team: "tech_spoc",   role: "lead",       email: "pankaj@gyftr.net" },       // Tech Manager 4
+  { id: "u_anandita", name: "Anandita",      team: "tech_spoc",   role: "lead",       email: "anandita@gyftr.net" },     // Tech SPOC — default recipient, assigns to everyone else below
+  { id: "u_harshita", name: "Harshita",      team: "tech_spoc",   role: "member",     email: "harshita@gyftr.net" },
+  { id: "u_mgr2",     name: "Deepak",        team: "tech_spoc",   role: "member",     email: "deepak@gyftr.net" },
+  { id: "u_mgr3",     name: "Sameer",        team: "tech_spoc",   role: "member",     email: "sameer@gyftr.net" },
+  { id: "u_mgr4",     name: "Pankaj",        team: "tech_spoc",   role: "member",     email: "pankaj@gyftr.net" },
   // ── Development ──
   { id: "u_raj",      name: "Raj",           team: "development", role: "member",     email: "raj@gyftr.net" },
   { id: "u_anmol",    name: "Anmol",         team: "development", role: "member",     email: "anmol@gyftr.net" },
@@ -47,6 +48,7 @@ function base(
     title,
     brd: extra.brd ?? "",
     partner,
+    brand: extra.brand ?? null,
     lob,
     priority: extra.priority ?? "P1",
     bifurcation: extra.bifurcation ?? "B2C",
@@ -71,6 +73,7 @@ function base(
     history: extra.history ?? [],
     comments: extra.comments ?? [],
     attachments: extra.attachments ?? [],
+    stageTargets: extra.stageTargets ?? {},
   };
 }
 
@@ -79,7 +82,7 @@ export const SEED_PROJECTS: Project[] = [
   base("TP-001", "Addition of Bill Payments, Flights & Hotels", "Godrej", "LLC", {
     brd: "Extend the Godrej loyalty catalogue with Bill Payments, Flights and Hotels. Wallet round-up logic and guidelines to be finalised with partner.",
     priority: "P0", bifurcation: "B2B", stage: "uat", status: "qa_clarification_pending",
-    ownerId: "u_anjali", businessOwnerId: "u_anjali", blocked: true,
+    ownerId: "u_saurabh", businessOwnerId: "u_anjali", blocked: true,
     blockReason: "Cleartrip staging API not working — Bills & Utilities API failing frequently.",
     stageEnteredAt: ago(9), createdAt: ago(48),
     targetGoLive: null, sacrosanctGoLive: "2026-04-30",
@@ -158,6 +161,7 @@ export const SEED_PROJECTS: Project[] = [
     subtasks: [],
   }),
   base("TP-010", "Variable denomination — Godrej", "Godrej", "Channel Program", {
+    brand: "Club One",
     brd: "Variable denomination vouchers for Godrej Club One.",
     priority: "P0", stage: "live", status: "live",
     ownerId: "u_ceo", stageEnteredAt: ago(174), createdAt: ago(210),

@@ -34,11 +34,13 @@ create or replace function is_pmo() returns boolean language sql stable security
 $$;
 
 -- Which team owns the ball while a project sits in a given stage.
+-- UAT is owned by Product (not Business) — go-live/deploy approval sits with
+-- Product per the CEO's process, matching TRANSITIONS.qa's forward in workflow.ts.
 create or replace function stage_owner(s stage_id) returns team_id language sql immutable as $$
   select case s
     when 'intake' then 'business' when 'scoping' then 'product'
     when 'to_be_picked' then 'tech_spoc' when 'development' then 'development'
-    when 'qa' then 'qa' when 'uat' then 'business' when 'pre_prod' then 'development'
+    when 'qa' then 'qa' when 'uat' then 'product' when 'pre_prod' then 'development'
     else 'leadership' end::team_id;
 $$;
 
@@ -50,6 +52,7 @@ create table projects (
   title              text not null,
   brd                text default '',
   partner            text not null,
+  brand              text,
   lob                text,
   priority           priority not null default 'P1',
   bifurcation        text check (bifurcation in ('B2B','B2C')) default 'B2C',
@@ -126,6 +129,19 @@ $$;
 create trigger trg_subtask_scope after insert or update of team on subtasks
   for each row execute function sync_subtask_scope();
 
+-- Expected date per pipeline stage ("expected pickup date", "expected
+-- dev-done date", etc.) — one row per project per stage, so project details
+-- show a full timeline instead of a single overall status.
+create table stage_targets (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  stage stage_id not null,
+  expected_date date,
+  updated_by uuid references people(id),
+  updated_at timestamptz not null default now(),
+  unique (project_id, stage)
+);
+
 create table stage_history (
   id uuid primary key default gen_random_uuid(),
   project_id uuid references projects(id) on delete cascade,
@@ -165,6 +181,7 @@ alter table subtasks      enable row level security;
 alter table stage_history enable row level security;
 alter table comments      enable row level security;
 alter table attachments   enable row level security;
+alter table stage_targets enable row level security;
 
 -- projects: see if involved/overseer; create if business/product/spoc/pmo; update only in-court team or pmo
 --
@@ -203,6 +220,37 @@ create policy p_del on projects for delete using ( is_pmo() );
 create or replace function enforce_project_update_scope() returns trigger language plpgsql as $$
 begin
   if auth.uid() is null then return new; end if;
+  -- Pure visibility bookkeeping (sync_subtask_scope's cascading UPDATE when a
+  -- sub-task adds a new team to involved_teams, or any future trigger that
+  -- only touches that column) must never be blocked here — it's not a user
+  -- edit. Without this, e.g. Tech SPOC creating a sub-task on a Product-court
+  -- project fails: the SECURITY DEFINER trigger's own UPDATE still runs as
+  -- the calling user for auth.uid()/my_team() purposes, and Tech SPOC isn't
+  -- yet in involved_teams at that point, so every check below would reject it.
+  if new.title is not distinct from old.title
+    and new.brd is not distinct from old.brd
+    and new.partner is not distinct from old.partner
+    and new.brand is not distinct from old.brand
+    and new.lob is not distinct from old.lob
+    and new.priority is not distinct from old.priority
+    and new.bifurcation is not distinct from old.bifurcation
+    and new.stage is not distinct from old.stage
+    and new.status is not distinct from old.status
+    and new.owner_id is not distinct from old.owner_id
+    and new.business_owner_id is not distinct from old.business_owner_id
+    and new.blocked is not distinct from old.blocked
+    and new.block_reason is not distinct from old.block_reason
+    and new.priority_month is not distinct from old.priority_month
+    and new.dev_effort_days is not distinct from old.dev_effort_days
+    and new.reason_for_delay is not distinct from old.reason_for_delay
+    and new.product_spoc_id is not distinct from old.product_spoc_id
+    and new.tech_lead_id is not distinct from old.tech_lead_id
+    and new.sacrosanct_go_live is not distinct from old.sacrosanct_go_live
+    and new.target_go_live is not distinct from old.target_go_live
+    and new.timeline_eta is not distinct from old.timeline_eta
+  then
+    return new;
+  end if;
   if is_pmo() or my_team() = old.owner_team or (old.stage = 'to_be_picked' and my_team() = 'development') then
     return new;
   end if;
@@ -210,6 +258,7 @@ begin
     if new.title is distinct from old.title
       or new.brd is distinct from old.brd
       or new.partner is distinct from old.partner
+      or new.brand is distinct from old.brand
       or new.lob is distinct from old.lob
       or new.priority is distinct from old.priority
       or new.bifurcation is distinct from old.bifurcation
@@ -236,12 +285,25 @@ $$;
 create trigger trg_enforce_update before update on projects
   for each row execute function enforce_project_update_scope();
 
--- children: readable if the project is visible; writable only by in-court team / pmo,
--- OR (subtasks only) the person that sub-task is assigned to — so an assignee can
--- fill in their own promised date / effort without their team holding the court.
-create policy s_sel on subtasks      for select using ( can_see(project_id) );
-create policy s_wr  on subtasks      for all    using ( can_act(project_id) or assignee_id = (select id from people where auth_id = auth.uid()) )
-                                                 with check ( can_act(project_id) or assignee_id = (select id from people where auth_id = auth.uid()) );
+-- children: readable if the project is visible.
+-- Sub-tasks: creation is restricted to Product + Tech SPOC (they scope the
+-- work); everyone can still view; update/delete open to the in-court team,
+-- PMO, or (own row only) the assignee filling in their own promised date/effort.
+create policy s_sel on subtasks for select using ( can_see(project_id) );
+create policy s_ins on subtasks for insert with check ( is_pmo() or my_team() in ('product', 'tech_spoc') );
+create policy s_upd on subtasks for update
+  using ( can_act(project_id) or assignee_id = (select id from people where auth_id = auth.uid()) )
+  with check ( can_act(project_id) or assignee_id = (select id from people where auth_id = auth.uid()) );
+create policy s_del on subtasks for delete using ( can_act(project_id) or is_pmo() );
+
+-- Stage targets: any team that's ever been involved (not just whoever
+-- currently holds the court) may set/update a stage's expected date — e.g.
+-- Business pencils in an expected QA-done date well before QA even starts.
+create policy st_sel on stage_targets for select using ( can_see(project_id) );
+create policy st_wr  on stage_targets for all
+  using ( is_pmo() or exists ( select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams) ) )
+  with check ( is_pmo() or exists ( select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams) ) );
+
 create policy h_sel on stage_history for select using ( can_see(project_id) );
 -- NOT can_act(project_id): a transition fires the projects UPDATE and this
 -- history INSERT as two independent, un-awaited requests (see transition() in
@@ -268,7 +330,7 @@ create policy a_ins on attachments for insert with check (
 );
 
 -- Realtime so every logged-in client updates the instant anything changes.
-alter publication supabase_realtime add table projects, subtasks, stage_history, comments, attachments;
+alter publication supabase_realtime add table projects, subtasks, stage_history, comments, attachments, stage_targets;
 
 -- ══════════════════════════════════════════════════════════════
 -- Directory access + magic-link claim

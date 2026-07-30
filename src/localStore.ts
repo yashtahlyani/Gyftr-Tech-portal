@@ -87,10 +87,16 @@ export function transition(
 /** Sheet-parity planning fields — editable from the project page's Details rail. */
 export type DetailsPatch = Partial<Pick<Project,
   "priorityMonth" | "timelineEta" | "devEffortDays" | "reasonForDelay" |
-  "productSpocId" | "techLeadId" | "targetGoLive" | "sacrosanctGoLive">>;
+  "productSpocId" | "techLeadId" | "targetGoLive" | "sacrosanctGoLive" | "brand">>;
 
 export function updateDetails(id: string, patch: DetailsPatch) {
   update(id, (p) => ({ ...p, ...patch }));
+}
+
+/** Per-stage expected date. */
+export function setStageTarget(id: string, stage: StageId, _byId: string, expectedDate: string | null) {
+  void _byId;
+  update(id, (p) => ({ ...p, stageTargets: { ...p.stageTargets, [stage]: expectedDate ?? undefined } }));
 }
 
 export function setStatus(id: string, toStatus: StatusId, byId: string) {
@@ -186,7 +192,7 @@ export function updateSubtask(id: string, subId: string, patch: SubtaskPatch) {
   update(id, (p) => ({ ...p, subtasks: p.subtasks.map((s) => (s.id === subId ? { ...s, ...patch } : s)) }));
 }
 
-export function createProject(input: Omit<Project, "id" | "code" | "createdAt" | "stageEnteredAt" | "finalGoLive" | "history" | "comments" | "subtasks" | "attachments"> & { subtasks?: SubTask[] }) {
+export function createProject(input: Omit<Project, "id" | "code" | "createdAt" | "stageEnteredAt" | "finalGoLive" | "history" | "comments" | "subtasks" | "attachments" | "stageTargets"> & { subtasks?: SubTask[] }) {
   const n = state.length + 1;
   const code = `TP-${String(n).padStart(3, "0")}`;
   const proj: Project = {
@@ -196,6 +202,7 @@ export function createProject(input: Omit<Project, "id" | "code" | "createdAt" |
     createdAt: now(),
     stageEnteredAt: now(),
     finalGoLive: null,
+    stageTargets: {},
     subtasks: input.subtasks ?? [],
     comments: [],
     attachments: [],
