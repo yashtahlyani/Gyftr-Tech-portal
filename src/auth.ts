@@ -1,42 +1,71 @@
-/* ─── Cloud auth — demo profile picker, backed by real Supabase sessions.
-   RLS is keyed off auth.uid(), so every "profile" is still a genuine signed-in
-   session under the hood (one shared demo password) — picking a name just
-   skips typing credentials. Swap in real per-user passwords / SSO before
-   this is anything but a demo. No-op in local demo mode. ─── */
+/* ─── Cloud auth — demo profile picker, backed by real Cognito sessions.
+   Every "profile" is still a genuine signed-in session under the hood (one
+   shared password for every account), so picking a name just skips typing
+   credentials — same UX as the Supabase version, different auth provider.
+   No-op in local demo mode. ─── */
 import { useEffect, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
-import { supabase, isCloud } from "./lib";
-import { loadPeople } from "./people";
+import {
+  CognitoUserPool, CognitoUser, AuthenticationDetails, type CognitoUserSession,
+} from "amazon-cognito-identity-js";
+import { isCloud } from "./lib";
+import { setAuthToken, get } from "./api";
 import type { Person } from "./types";
 
 const ALLOWED_DOMAIN = "gyftr.net";
-const DEMO_PASSWORD = "GyftrTech@2026";
+const DEMO_PASSWORD = "default@123";
+
+const userPoolId = import.meta.env.VITE_COGNITO_USER_POOL_ID as string | undefined;
+const clientId = import.meta.env.VITE_COGNITO_CLIENT_ID as string | undefined;
+const pool = userPoolId && clientId ? new CognitoUserPool({ UserPoolId: userPoolId, ClientId: clientId }) : null;
 
 export function isAllowedEmail(email: string): boolean {
   return email.trim().toLowerCase().endsWith(`@${ALLOWED_DOMAIN}`);
 }
 
+// amazon-cognito-identity-js has no onAuthStateChange like Supabase — every
+// useCloudAuth() instance subscribes here, and switchProfile()/signOutCloud()
+// ping it after changing the session so the app re-resolves immediately
+// instead of waiting for the next mount.
+const listeners = new Set<() => void>();
+function notifyAuthChanged() { listeners.forEach((l) => l()); }
+
+/** For cloudStore.ts — refetch immediately on sign-in/out instead of waiting for the next poll. */
+export function subscribeAuthChanged(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
+function authenticate(email: string, password: string): Promise<CognitoUserSession> {
+  return new Promise((resolve, reject) => {
+    if (!pool) return reject(new Error("Cloud mode is off."));
+    const cognitoUser = new CognitoUser({ Username: email, Pool: pool });
+    const details = new AuthenticationDetails({ Username: email, Password: password });
+    cognitoUser.authenticateUser(details, {
+      onSuccess: (session) => resolve(session),
+      onFailure: (err) => reject(err),
+    });
+  });
+}
+
 /** Sign in (or switch) to a profile by email — one click, no password prompt. */
 export async function switchProfile(email: string): Promise<{ ok: boolean; error?: string }> {
-  if (!supabase) return { ok: false, error: "Cloud mode is off." };
+  if (!pool) return { ok: false, error: "Cloud mode is off." };
   if (!isAllowedEmail(email)) return { ok: false, error: `Use your @${ALLOWED_DOMAIN} email address.` };
-  await supabase.auth.signOut();
-  const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password: DEMO_PASSWORD });
-  return error ? { ok: false, error: error.message } : { ok: true };
+  try {
+    await signOutCloud();
+    const session = await authenticate(email.trim().toLowerCase(), DEMO_PASSWORD);
+    setAuthToken(session.getIdToken().getJwtToken());
+    notifyAuthChanged();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Sign-in failed." };
+  }
 }
 
 export async function signOutCloud() {
-  if (supabase) await supabase.auth.signOut();
-}
-
-async function claimPerson(): Promise<Person | null> {
-  if (!supabase) return null;
-  const { data, error } = await supabase.rpc("claim_person");
-  if (error) { console.error("claim_person failed:", error.message); return null; }
-  const row = (Array.isArray(data) ? data[0] : data) as
-    { id: string; name: string; team: Person["team"]; role: Person["role"]; email: string } | null;
-  if (!row?.id) return null;
-  return { id: row.id, name: row.name, team: row.team, role: row.role, email: row.email };
+  setAuthToken(null);
+  pool?.getCurrentUser()?.signOut();
+  notifyAuthChanged();
 }
 
 export type AuthState =
@@ -45,26 +74,40 @@ export type AuthState =
   | { status: "signed_in"; me: Person }
   | { status: "no_access"; email: string };
 
-/** Drives the cloud login lifecycle: session → directory row → app-ready Person. */
+function restoreSession(): Promise<CognitoUserSession | null> {
+  return new Promise((resolve) => {
+    const current = pool?.getCurrentUser();
+    if (!current) return resolve(null);
+    current.getSession((err: Error | null, session: CognitoUserSession | null) => {
+      resolve(err ? null : session);
+    });
+  });
+}
+
+/** Drives the cloud login lifecycle: session → /api/me → app-ready Person. */
 export function useCloudAuth(): AuthState {
   const [state, setState] = useState<AuthState>({ status: "loading" });
 
   useEffect(() => {
-    if (!isCloud || !supabase) { setState({ status: "signed_out" }); return; }
+    if (!isCloud || !pool) { setState({ status: "signed_out" }); return; }
     let cancelled = false;
-    const client = supabase;
 
-    async function resolve(session: Session | null) {
-      if (!session) { if (!cancelled) setState({ status: "signed_out" }); return; }
-      await loadPeople();
-      const me = await claimPerson();
-      if (cancelled) return;
-      setState(me ? { status: "signed_in", me } : { status: "no_access", email: session.user.email ?? "" });
+    async function resolve() {
+      const session = await restoreSession();
+      if (!session || !session.isValid()) { if (!cancelled) setState({ status: "signed_out" }); return; }
+      setAuthToken(session.getIdToken().getJwtToken());
+      const email = session.getIdToken().payload.email as string | undefined;
+      try {
+        const me = await get<Person>("/api/me");
+        if (!cancelled) setState({ status: "signed_in", me });
+      } catch {
+        if (!cancelled) setState({ status: "no_access", email: email ?? "" });
+      }
     }
 
-    client.auth.getSession().then(({ data }) => resolve(data.session));
-    const { data: sub } = client.auth.onAuthStateChange((_event, session) => resolve(session));
-    return () => { cancelled = true; sub.subscription.unsubscribe(); };
+    resolve();
+    listeners.add(resolve);
+    return () => { cancelled = true; listeners.delete(resolve); };
   }, []);
 
   return state;
