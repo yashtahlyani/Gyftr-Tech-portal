@@ -1,0 +1,35 @@
+# Local/single-host orchestration only — not how this deploys to AWS (that's
+# CodeBuild → ECR → ECS/Fargate, see backend/buildspec.yml and buildspec.yml).
+# Same shape as the sibling gyftr-portal/gyftr-legal docker-compose.yml files.
+#
+# Production URL mapping:
+#   Frontend → https://techportal.gyftr.net       (adjust to your real domain)
+#   Backend  → https://techportal-api.gyftr.net
+services:
+  backend:
+    platform: linux/arm64
+    build: ./backend
+    ports:
+      - "4000:4000"
+    env_file: .env
+    environment:
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    platform: linux/arm64
+    build:
+      context: .
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+        VITE_COGNITO_USER_POOL_ID: ${VITE_COGNITO_USER_POOL_ID}
+        VITE_COGNITO_CLIENT_ID: ${VITE_COGNITO_CLIENT_ID}
+    ports:
+      - "4173:4173"
+    depends_on:
+      backend:
+        condition: service_healthy

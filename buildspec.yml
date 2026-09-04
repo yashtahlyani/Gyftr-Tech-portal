@@ -1,0 +1,43 @@
+# CodeBuild buildspec for the frontend. Derives the account ID dynamically
+# (rather than hardcoding it, unlike backend/buildspec.yml, which needs the
+# shared base-image account) and fails fast if Cognito config is missing —
+# same convention as the sibling gyftr-portal/gyftr-legal frontend buildspecs.
+version: 0.2
+
+env:
+  variables:
+    AWS_DEFAULT_REGION: ap-south-1
+    IMAGE_REPO_NAME: gyftr-tech-portal-frontend
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to ECR...
+      - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - |
+        if [ -z "$VITE_COGNITO_USER_POOL_ID" ] || [ -z "$VITE_COGNITO_CLIENT_ID" ]; then
+          echo "VITE_COGNITO_USER_POOL_ID / VITE_COGNITO_CLIENT_ID are not set — login would break in the built image. Failing the build."
+          exit 1
+        fi
+      - IMAGE_TAG=v1.$CODEBUILD_BUILD_NUMBER
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+  build:
+    commands:
+      - echo Building frontend image...
+      - >
+        docker build --platform linux/arm64
+        --build-arg VITE_API_URL=$VITE_API_URL
+        --build-arg VITE_COGNITO_USER_POOL_ID=$VITE_COGNITO_USER_POOL_ID
+        --build-arg VITE_COGNITO_CLIENT_ID=$VITE_COGNITO_CLIENT_ID
+        -t $REPOSITORY_URI:$IMAGE_TAG -t $REPOSITORY_URI:latest -f Dockerfile .
+  post_build:
+    commands:
+      - echo Pushing frontend image...
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - docker push $REPOSITORY_URI:latest
+      - printf '[{"name":"%s","imageUri":"%s"}]' "$FRONTEND_ECS_CONTAINER" $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json

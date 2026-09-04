@@ -5,6 +5,11 @@
 const { CognitoJwtVerifier } = require("aws-jwt-verify");
 const { query } = require("../db");
 
+if (!process.env.COGNITO_USER_POOL_ID || !process.env.COGNITO_CLIENT_ID) {
+  console.error("COGNITO_USER_POOL_ID and COGNITO_CLIENT_ID must both be set — refusing to start.");
+  process.exit(1);
+}
+
 const verifier = CognitoJwtVerifier.create({
   userPoolId: process.env.COGNITO_USER_POOL_ID,
   tokenUse: "id",
@@ -23,10 +28,16 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 
-  const { rows } = await query(
-    "select id, name, team, role, email from people where cognito_sub = $1",
-    [payload.sub]
-  );
+  let rows;
+  try {
+    ({ rows } = await query(
+      "select id, name, team, role, email from people where cognito_sub = $1",
+      [payload.sub]
+    ));
+  } catch (err) {
+    console.error("[requireAuth] identity lookup failed:", err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
   if (rows.length === 0) {
     return res.status(403).json({ error: "no_access", email: payload.email || "" });
   }

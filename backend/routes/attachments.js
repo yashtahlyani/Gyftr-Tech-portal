@@ -6,10 +6,11 @@ const { withTransaction } = require("../db");
 const authz = require("../authz");
 const { attachment } = require("../serialize");
 const { loadProjectRow } = require("../projectLoader");
+const { asyncHandler } = require("../asyncHandler");
 
 const router = express.Router();
 
-router.post("/", async (req, res) => {
+router.post("/", asyncHandler("POST /api/attachments", async (req, res) => {
   const { projectId, name, kind, url } = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, projectId);
@@ -23,6 +24,6 @@ router.post("/", async (req, res) => {
   });
   if (result.status !== 200) return res.status(result.status).json({ error: "forbidden or not found" });
   res.status(201).json(attachment(result.row));
-});
+}));
 
 module.exports = router;

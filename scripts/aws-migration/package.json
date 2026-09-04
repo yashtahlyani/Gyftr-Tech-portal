@@ -6,7 +6,8 @@
   "scripts": {
     "migrate-db": "node migrate-db.mjs",
     "create-cognito-users": "node create-cognito-users.mjs",
-    "smoke-test": "node smoke-test.mjs"
+    "smoke-test": "node smoke-test.mjs",
+    "doctor": "node doctor.js"
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.700.0",

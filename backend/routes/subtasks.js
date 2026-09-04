@@ -6,6 +6,7 @@ const { withTransaction, query } = require("../db");
 const authz = require("../authz");
 const { syncSubtaskScope } = require("../projectScope");
 const { subtask } = require("../serialize");
+const { asyncHandler } = require("../asyncHandler");
 
 const router = express.Router();
 
@@ -19,7 +20,7 @@ async function loadProjectRowLite(client, id) {
   return { id: rows[0].id, stage: rows[0].stage, ownerTeam: rows[0].owner_team, involvedTeams: rows[0].involved_teams };
 }
 
-router.post("/", async (req, res) => {
+router.post("/", asyncHandler("POST /api/subtasks", async (req, res) => {
   if (!authz.canCreateSubtask(req.person)) return res.status(403).json({ error: "forbidden" });
   const b = req.body; // { projectId, title, team, assigneeId?, done, expectedDate? }
   const row = await withTransaction(async (client) => {
@@ -38,9 +39,9 @@ router.post("/", async (req, res) => {
   });
   if (!row) return res.status(404).json({ error: "project not found" });
   res.status(201).json(subtask(row));
-});
+}));
 
-router.post("/:id/toggle", async (req, res) => {
+router.post("/:id/toggle", asyncHandler("POST /api/subtasks/:id/toggle", async (req, res) => {
   const result = await withTransaction(async (client) => {
     const s = await loadSubtaskRow(client, req.params.id);
     if (!s) return { status: 404 };
@@ -50,9 +51,9 @@ router.post("/:id/toggle", async (req, res) => {
   });
   if (result.status !== 200) return res.status(result.status).json({ error: "forbidden or not found" });
   res.json(subtask(result.row));
-});
+}));
 
-router.post("/:id/reassign", async (req, res) => {
+router.post("/:id/reassign", asyncHandler("POST /api/subtasks/:id/reassign", async (req, res) => {
   const { assigneeId } = req.body;
   const result = await withTransaction(async (client) => {
     const s = await loadSubtaskRow(client, req.params.id);
@@ -63,10 +64,10 @@ router.post("/:id/reassign", async (req, res) => {
   });
   if (result.status !== 200) return res.status(result.status).json({ error: "forbidden or not found" });
   res.json(subtask(result.row));
-});
+}));
 
 // Assigner sets expectedDate (management only); assignee sets promisedDate/effortDays on their own row.
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", asyncHandler("PATCH /api/subtasks/:id", async (req, res) => {
   const patch = req.body;
   const result = await withTransaction(async (client) => {
     const s = await loadSubtaskRow(client, req.params.id);
@@ -92,14 +93,14 @@ router.patch("/:id", async (req, res) => {
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error || "forbidden or not found" });
   res.json(subtask(result.row));
-});
+}));
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", asyncHandler("DELETE /api/subtasks/:id", async (req, res) => {
   const { rows } = await query("select id from subtasks where id = $1", [req.params.id]);
   if (!rows[0]) return res.status(404).end();
   if (!authz.canDeleteSubtask(req.person)) return res.status(403).json({ error: "forbidden" });
   await query("delete from subtasks where id = $1", [req.params.id]);
   res.status(204).end();
-});
+}));
 
 module.exports = router;
