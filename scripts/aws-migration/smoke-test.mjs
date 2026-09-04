@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* ─── Run this right after EC2/RDS/Cognito are all up, before handing the
+/* ─── Run this right after ECS/RDS/Cognito are all up, before handing the
    app over to real users. Hits /health, logs in as one real person (via
    Cognito's admin auth flow — no browser needed), then does a couple of
    authenticated round trips. Requires Node 18+ (uses global fetch). ─── */

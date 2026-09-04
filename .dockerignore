@@ -1,0 +1,17 @@
+node_modules
+.env
+.env.*
+!.env.example
+dist
+npm-debug.log
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+backend
+scripts
+supabase
+infra
+.claude
+.vercel
