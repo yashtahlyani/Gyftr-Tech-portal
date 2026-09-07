@@ -1,8 +1,12 @@
-/* ─── Small shared helpers ─── */
+/* ─── Small shared helpers + optional Supabase client ─── */
+import { createClient } from "@supabase/supabase-js";
 
-/** Cloud mode (talking to the AWS API) once VITE_API_URL is set; otherwise
- *  local demo mode (data persists in the browser only). */
-export const isCloud = !!(import.meta.env.VITE_API_URL as string | undefined);
+const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+
+/** Null in local demo mode; a real client once env vars are set. */
+export const supabase = url && key ? createClient(url, key) : null;
+export const isCloud = !!supabase;
 
 export const DAY = 86_400_000;
 export const now = () => Date.now();
