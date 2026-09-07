@@ -6,11 +6,10 @@ const { withTransaction } = require("../db");
 const authz = require("../authz");
 const { comment } = require("../serialize");
 const { loadProjectRow } = require("../projectLoader");
-const { asyncHandler } = require("../asyncHandler");
 
 const router = express.Router();
 
-router.post("/", asyncHandler("POST /api/comments", async (req, res) => {
+router.post("/", async (req, res) => {
   const { projectId, text, pinned } = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, projectId);
@@ -24,9 +23,9 @@ router.post("/", asyncHandler("POST /api/comments", async (req, res) => {
   });
   if (result.status !== 200) return res.status(result.status).json({ error: "forbidden or not found" });
   res.status(201).json(comment(result.row));
-}));
+});
 
-router.post("/:id/resolve", asyncHandler("POST /api/comments/:id/resolve", async (req, res) => {
+router.post("/:id/resolve", async (req, res) => {
   const result = await withTransaction(async (client) => {
     const { rows: crows } = await client.query("select * from comments where id = $1", [req.params.id]);
     const c = crows[0];
@@ -38,6 +37,6 @@ router.post("/:id/resolve", asyncHandler("POST /api/comments/:id/resolve", async
   });
   if (result.status !== 200) return res.status(result.status).json({ error: "forbidden or not found" });
   res.json(comment(result.row));
-}));
+});
 
 module.exports = router;

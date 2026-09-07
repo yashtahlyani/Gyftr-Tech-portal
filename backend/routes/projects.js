@@ -10,17 +10,16 @@ const authz = require("../authz");
 const { syncProjectScope } = require("../projectScope");
 const { STATUS_META, findTransition } = require("../workflow");
 const { loadAllProjects, loadProject, loadProjectRow } = require("../projectLoader");
-const { asyncHandler } = require("../asyncHandler");
 
 const router = express.Router();
 
-router.get("/", asyncHandler("GET /api/projects", async (req, res) => {
-  const all = await loadAllProjects(getPool());
+router.get("/", async (req, res) => {
+  const all = await loadAllProjects(await getPool());
   const visible = all.filter((p) => authz.canSeeProject(req.person, p));
   res.json(visible);
-}));
+});
 
-router.post("/", asyncHandler("POST /api/projects", async (req, res) => {
+router.post("/", async (req, res) => {
   if (!authz.canCreateProject(req.person)) return res.status(403).json({ error: "forbidden" });
   const b = req.body;
   const proj = await withTransaction(async (client) => {
@@ -58,7 +57,7 @@ router.post("/", asyncHandler("POST /api/projects", async (req, res) => {
     return loadProject(client, id);
   });
   res.status(201).json(proj);
-}));
+});
 
 /** Shared mover: updates stage/status/owner and logs history in one transaction. */
 async function applyMove(client, projectRow, { toStage, toStatus, ownerId, blocked, blockReason, note, byId }) {
@@ -79,7 +78,7 @@ async function applyMove(client, projectRow, { toStage, toStatus, ownerId, block
   );
 }
 
-router.post("/:id/transition", asyncHandler("POST /api/projects/:id/transition", async (req, res) => {
+router.post("/:id/transition", async (req, res) => {
   const { toStage, ownerId, note } = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, req.params.id);
@@ -96,9 +95,9 @@ router.post("/:id/transition", asyncHandler("POST /api/projects/:id/transition",
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
   res.json(result.project);
-}));
+});
 
-router.post("/:id/pickup", asyncHandler("POST /api/projects/:id/pickup", async (req, res) => {
+router.post("/:id/pickup", async (req, res) => {
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, req.params.id);
     if (!projectRow) return { status: 404 };
@@ -112,9 +111,9 @@ router.post("/:id/pickup", asyncHandler("POST /api/projects/:id/pickup", async (
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
   res.json(result.project);
-}));
+});
 
-router.post("/:id/clarify", asyncHandler("POST /api/projects/:id/clarify", async (req, res) => {
+router.post("/:id/clarify", async (req, res) => {
   const { toStage, toStatus, note, ownerId } = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, req.params.id);
@@ -128,9 +127,9 @@ router.post("/:id/clarify", asyncHandler("POST /api/projects/:id/clarify", async
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
   res.json(result.project);
-}));
+});
 
-router.post("/:id/reopen", asyncHandler("POST /api/projects/:id/reopen", async (req, res) => {
+router.post("/:id/reopen", async (req, res) => {
   const { note, ownerId } = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, req.params.id);
@@ -144,9 +143,9 @@ router.post("/:id/reopen", asyncHandler("POST /api/projects/:id/reopen", async (
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
   res.json(result.project);
-}));
+});
 
-router.post("/:id/status", asyncHandler("POST /api/projects/:id/status", async (req, res) => {
+router.post("/:id/status", async (req, res) => {
   const { toStatus } = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, req.params.id);
@@ -164,9 +163,9 @@ router.post("/:id/status", asyncHandler("POST /api/projects/:id/status", async (
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
   res.json(result.project);
-}));
+});
 
-router.post("/:id/block", asyncHandler("POST /api/projects/:id/block", async (req, res) => {
+router.post("/:id/block", async (req, res) => {
   const { blocked, reason } = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, req.params.id);
@@ -176,10 +175,10 @@ router.post("/:id/block", asyncHandler("POST /api/projects/:id/block", async (re
     return { status: 200 };
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
-  res.json(await loadProject(getPool(), req.params.id));
-}));
+  res.json(await loadProject(await getPool(), req.params.id));
+});
 
-router.post("/:id/reassign", asyncHandler("POST /api/projects/:id/reassign", async (req, res) => {
+router.post("/:id/reassign", async (req, res) => {
   const { ownerId } = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, req.params.id);
@@ -189,15 +188,15 @@ router.post("/:id/reassign", asyncHandler("POST /api/projects/:id/reassign", asy
     return { status: 200 };
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
-  res.json(await loadProject(getPool(), req.params.id));
-}));
+  res.json(await loadProject(await getPool(), req.params.id));
+});
 
 // Sheet-parity planning fields — editable from the project page's Details rail.
 // Mirrors enforce_project_update_scope()'s column guard: in-court/pmo may edit
 // anything here; a product lead acting outside their own court may ONLY touch
 // targetGoLive/timelineEta; sacrosanctGoLive (the committed date) is PMO-only.
 const DATE_ONLY_KEYS = ["targetGoLive", "timelineEta"];
-router.patch("/:id/details", asyncHandler("PATCH /api/projects/:id/details", async (req, res) => {
+router.patch("/:id/details", async (req, res) => {
   const patch = req.body;
   const result = await withTransaction(async (client) => {
     const projectRow = await loadProjectRow(client, req.params.id);
@@ -232,13 +231,13 @@ router.patch("/:id/details", asyncHandler("PATCH /api/projects/:id/details", asy
     return { status: 200 };
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
-  res.json(await loadProject(getPool(), req.params.id));
-}));
+  res.json(await loadProject(await getPool(), req.params.id));
+});
 
-router.delete("/:id", asyncHandler("DELETE /api/projects/:id", async (req, res) => {
+router.delete("/:id", async (req, res) => {
   if (!authz.canDeleteProject(req.person)) return res.status(403).json({ error: "forbidden" });
   await query("delete from projects where id = $1", [req.params.id]);
   res.status(204).end();
-}));
+});
 
 module.exports = router;

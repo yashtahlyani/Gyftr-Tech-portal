@@ -21,7 +21,7 @@ Frontend: React + Vite (TypeScript)
 Backend: Node.js (Express)
 Database: PostgreSQL
 Authentication: AWS Cognito
-Backend Hosting: AWS ECS/Fargate (behind an Application Load Balancer), built by CodeBuild from a Docker image — same mechanism as the sibling gyftr-portal/gyftr-legal apps, not a hand-managed EC2 box
+Backend Hosting: AWS EC2 (behind an Application Load Balancer)
 Frontend Hosting: AWS S3 + CloudFront
 Database Hosting: AWS RDS
 Secrets Management: AWS Secrets Manager
@@ -32,7 +32,7 @@ Existing production data is stored in Supabase (Postgres + Auth + Realtime).
 The new backend uses PostgreSQL on AWS RDS, with all authorization logic re-implemented server-side (RDS has no Row-Level Security — the Express API is the security boundary instead).
 Authentication moves from Supabase Auth to AWS Cognito.
 The frontend will be hosted using S3 and CloudFront.
-The backend API runs as a Docker container on ECS/Fargate behind an Application Load Balancer, built and deployed by CodeBuild/CodePipeline from backend/Dockerfile — matching how the sibling gyftr-portal and gyftr-legal apps actually deploy (their infra docs originally described EC2+pm2 too, but that was superseded early on; this doc starts from the real, proven mechanism instead of repeating that detour).
+The backend API will run on EC2 behind an Application Load Balancer.
 Nothing has been provisioned on AWS yet — no AWS account access was available while building this. The primary remaining task is to provision the AWS resources below, migrate the existing Supabase data, and deploy.
 
 2. Project Resources
@@ -100,7 +100,7 @@ An AWS account with billing enabled
 Node.js v18 or higher
 Git installed
 PostgreSQL command-line tools (psql), or any GUI Postgres client
-AWS CLI, configured with credentials that can manage RDS/Cognito/ECS/ECR/CodeBuild/CodePipeline/S3/CloudFront/Secrets Manager/IAM
+AWS CLI, configured with credentials that can manage RDS/Cognito/EC2/S3/CloudFront/Secrets Manager/IAM
 Access to the project's GitHub repository
 Access to the existing Supabase project (Dashboard access, to fetch a fresh service_role key)
 Access to the domain/DNS provider for gyftr.net
@@ -144,9 +144,9 @@ Instance Type: db.t4g.micro
 Storage: 20 GB gp3
 Create a strong database password and store it securely (you'll put it into Secrets Manager in Step 3, not in any file).
 Connectivity
-Public Access: No — this app's whole security model depends on the database being reachable only from the backend, never directly from the internet or your laptop. Run the migration scripts from inside the VPC (an ECS `exec` session, a bastion, or a temporary Cloud9/EC2 box in the same VPC) rather than opening RDS to the public.
+Public Access: No — this app's whole security model depends on the database being reachable only from the backend, never directly from the internet or your laptop. If you need to run the migration scripts from your own machine, tunnel through the EC2 instance created in Step 7 (or run the migration scripts on the EC2 box itself) rather than opening RDS to the public.
 Create a security group named:
-gyftr-tech-portal-rds-sg — leave it with no inbound rules for now; you'll open port 5432 to the backend ECS service's security group once it exists.
+gyftr-rds-sg — leave it with no inbound rules for now; you'll open port 5432 to the EC2 security group once it exists (Step 7).
 Additional configuration → initial database name: gyftr_tech_portal
 Click Create Database.
 Provisioning generally takes approximately 5–10 minutes.
@@ -157,9 +157,118 @@ Copy the database endpoint.
 Example:
 gyftr-tech-portal.xxxx.ap-south-1.rds.amazonaws.com
 
-8. Database Schema — applies itself automatically
-Unlike a typical app, there's no manual `psql -f schema.sql` step to run. backend/db.js's `applySchema()` executes the full contents of backend/db/schema.sql against RDS on every single API boot — every statement in that file is written to be safely re-runnable (`create table if not exists`, a `do $$ ... exception when duplicate_object$$` guard around the enum types, etc.), so the schema is always current the moment the backend container starts for the first time. This is the same convention the sibling gyftr-portal/gyftr-legal backends use: deploying = restarting a container, never a separate migration step to forget.
-If you ever do need to inspect or hand-apply it (e.g. to poke at the database directly before the API has ever run), the file to read is backend/db/schema.sql in the repo — it's the single source of truth, not reproduced inline here so this doc can't silently drift out of sync with it.
+8. Create the Database Schema
+Connect to PostgreSQL (from the EC2 box or via a tunnel, since public access is off):
+psql "postgresql://gyftr_admin:YOUR_PASSWORD@YOUR_RDS_ENDPOINT:5432/gyftr_tech_portal"
+
+Once connected, run the full contents of backend/db/schema.sql from the repo:
+\i backend/db/schema.sql
+
+Or paste it directly — the complete schema is reproduced here for convenience:
+
+create type team_id  as enum ('business','product','tech_spoc','development','design','qa','partner','leadership');
+create type role_id  as enum ('member','lead','pmo','leadership');
+create type stage_id as enum ('intake','scoping','to_be_picked','development','qa','uat','pre_prod','live');
+create type priority as enum ('P0','P1','P2');
+
+create table people (
+  id          uuid primary key default gen_random_uuid(),
+  cognito_sub text unique,
+  name        text not null,
+  email       text unique not null,
+  team        team_id not null,
+  role        role_id not null default 'member'
+);
+
+create or replace function stage_owner(s stage_id) returns team_id language sql immutable as $$
+  select case s
+    when 'intake' then 'business' when 'scoping' then 'product'
+    when 'to_be_picked' then 'tech_spoc' when 'development' then 'development'
+    when 'qa' then 'qa' when 'uat' then 'product' when 'pre_prod' then 'development'
+    else 'leadership' end::team_id;
+$$;
+
+create sequence projects_code_seq;
+
+create table projects (
+  id                 uuid primary key default gen_random_uuid(),
+  code               text unique not null default ('TP-' || lpad(nextval('projects_code_seq')::text, 3, '0')),
+  title              text not null,
+  brd                text default '',
+  partner            text not null,
+  brand              text,
+  lob                text,
+  priority           priority not null default 'P1',
+  bifurcation        text check (bifurcation in ('B2B','B2C')) default 'B2C',
+  stage              stage_id not null default 'intake',
+  status             text not null,
+  owner_id           uuid references people(id),
+  business_owner_id  uuid references people(id),
+  blocked            boolean not null default false,
+  block_reason       text,
+  owner_team         team_id not null default 'business',
+  involved_teams     team_id[] not null default '{business}',
+  stage_entered_at   timestamptz not null default now(),
+  created_at         timestamptz not null default now(),
+  target_go_live     date,
+  sacrosanct_go_live date,
+  priority_month     text,
+  timeline_eta       date,
+  dev_effort_days    int,
+  reason_for_delay   text,
+  product_spoc_id    uuid references people(id),
+  tech_lead_id       uuid references people(id),
+  final_go_live      date
+);
+create index on projects (stage);
+create index on projects using gin (involved_teams);
+
+create table subtasks (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid references projects(id) on delete cascade,
+  title text not null, team team_id not null, assignee_id uuid references people(id),
+  done boolean not null default false, created_at timestamptz not null default now(),
+  expected_date date,
+  promised_date date,
+  effort_days   int
+);
+
+create table stage_targets (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  stage stage_id not null,
+  expected_date date,
+  updated_by uuid references people(id),
+  updated_at timestamptz not null default now(),
+  unique (project_id, stage)
+);
+
+create table stage_history (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid references projects(id) on delete cascade,
+  at timestamptz not null default now(), by_id uuid references people(id),
+  from_stage stage_id, to_stage stage_id not null,
+  from_status text, to_status text not null, note text
+);
+
+create table comments (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid references projects(id) on delete cascade,
+  at timestamptz not null default now(), by_id uuid references people(id),
+  text text not null, pinned boolean not null default false, resolved boolean not null default false
+);
+
+create table attachments (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid references projects(id) on delete cascade,
+  name text not null, kind text not null, url text,
+  by_id uuid references people(id), at timestamptz not null default now()
+);
+
+create extension if not exists pgcrypto;
+
+Exit PostgreSQL using:
+\q
 
 9. Step 3 — Configure AWS Secrets Manager
 AWS Secrets Manager stores database credentials securely so that they do not need to be hardcoded into the backend.
@@ -169,7 +278,7 @@ Choose:
 Secret Type: Credentials for Amazon RDS database
 Select the gyftr-tech-portal RDS instance and enter the master username/password from Step 7 — AWS auto-populates the secret with the right keys (host, port, dbname, username, password), which is exactly what backend/db.js and the migration scripts expect.
 Set the secret name to:
-gyftr/tech-portal/db — slash-separated, matching the sibling apps' gyftr/portal/db and gyftr/legal/db naming (not a hyphenated variant).
+gyftr-tech-portal/rds
 Complete the creation process.
 
 10. Step 4 — Configure AWS Cognito
@@ -183,7 +292,7 @@ MFA: Disabled
 Self-registration: Disabled — every account is created ahead of time by scripts/aws-migration/create-cognito-users.mjs; nobody signs themselves up
 Account Recovery: Default
 Set:
-User Pool Name: gyftr-tech-portal-users (matches the sibling apps' gyftr-portal-users / gyftr-legal-users naming)
+User Pool Name: gyftr-tech-portal
 App Client Name: gyftr-tech-portal-web
 Client Type: Public Client
 Client Secret: Do not generate (the SPA can't keep a secret)
@@ -211,7 +320,7 @@ Generate temporary access credentials for the setup process.
 Mac/Linux
 cd scripts/aws-migration
 cp .env.example .env
-# edit .env: COGNITO_USER_POOL_ID, COGNITO_REGION, AWS_SECRET_NAME (or DB_HOST/DB_USER/DB_PASSWORD/DB_NAME)
+# edit .env: COGNITO_USER_POOL_ID, COGNITO_REGION, AWS_SECRET_NAME (or PGHOST/PGUSER/PGPASSWORD/PGDATABASE)
 
 export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_ID
 export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_ACCESS_KEY
@@ -221,7 +330,7 @@ node create-cognito-users.mjs
 Windows Command Prompt
 cd scripts\aws-migration
 copy .env.example .env
-rem edit .env: COGNITO_USER_POOL_ID, COGNITO_REGION, AWS_SECRET_NAME (or DB_HOST/DB_USER/DB_PASSWORD/DB_NAME)
+rem edit .env: COGNITO_USER_POOL_ID, COGNITO_REGION, AWS_SECRET_NAME (or PGHOST/PGUSER/PGPASSWORD/PGDATABASE)
 
 set AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_ID
 set AWS_SECRET_ACCESS_KEY=YOUR_SECRET_ACCESS_KEY
@@ -237,14 +346,14 @@ Run this before Step 11 (create-cognito-users.mjs needs the people rows to alrea
 Mac/Linux
 cd scripts/aws-migration
 cp .env.example .env
-# edit .env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AWS_SECRET_NAME (or DB_HOST/DB_USER/DB_PASSWORD/DB_NAME)
+# edit .env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AWS_SECRET_NAME (or PGHOST/PGUSER/PGPASSWORD/PGDATABASE)
 
 node migrate-db.mjs
 
 Windows Command Prompt
 cd scripts\aws-migration
 copy .env.example .env
-rem edit .env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AWS_SECRET_NAME (or DB_HOST/DB_USER/DB_PASSWORD/DB_NAME)
+rem edit .env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AWS_SECRET_NAME (or PGHOST/PGUSER/PGPASSWORD/PGDATABASE)
 
 node migrate-db.mjs
 
@@ -257,52 +366,173 @@ SELECT COUNT(*) FROM people;
 
 Both should return a value greater than 0. It's worth spot-checking subtasks, comments, and stage_history counts too before treating Supabase as decommissioned.
 
-13. Step 7 — ECR repositories
-CodeBuild pushes Docker images here; ECS pulls from here. Two repos, one per side:
-aws ecr create-repository --repository-name gyftr-tech-portal-backend --region ap-south-1
-aws ecr create-repository --repository-name gyftr-tech-portal-frontend --region ap-south-1
+13. Step 7 — Deploy Backend on AWS EC2
+The Express API will run on an EC2 instance.
+Open:
+AWS Console → EC2 → Launch Instance
+Configure:
+Name: gyftr-tech-portal-api
+AMI: Amazon Linux 2023
+Instance Type: t4g.micro (or t3.micro if not using Graviton)
+Key Pair
+Create:
+gyftr-tech-portal-key
+Download the .pem file and store it securely. The private key cannot be downloaded again after creation.
+Security Group
+Create:
+gyftr-api-sg
+Initially, temporarily allow your own IP on port 4000 for testing. Once the ALB exists (Step 14), come back and restrict inbound 4000 to the ALB's security group only, and remove the temporary rule.
+Allow SSH (22) only from trusted administrator IP addresses.
+IAM Role
+Create an EC2 IAM role:
+gyftr-tech-portal-ec2-role
+Grant it permission to read the gyftr-tech-portal/rds secret from AWS Secrets Manager (secretsmanager:GetSecretValue, scoped to that one secret's ARN).
+Once the instance is running, go back to gyftr-rds-sg (RDS's security group, Step 7) and add an inbound rule: PostgreSQL (5432) from gyftr-api-sg.
 
-14. Step 8 — ECS cluster, task definitions, services
-The Express API and (optionally — see Step 9's two options) the frontend both run as Docker containers on ECS/Fargate, not a hand-managed EC2 box. This matches how gyftr-portal and gyftr-legal actually run in production.
-ECS console → Create cluster → "Networking only" (Fargate), name gyftr-tech-portal.
-Backend task definition: Fargate, ARM64 (matches backend/Dockerfile's --platform linux/arm64), 0.5 vCPU / 1GB to start. Container image <account>.dkr.ecr.ap-south-1.amazonaws.com/gyftr-tech-portal-backend:latest, port 4000. Environment variables: AWS_SECRET_NAME=gyftr/tech-portal/db, COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID, COGNITO_REGION=ap-south-1, FRONTEND_URL, NODE_ENV=production.
-Task execution role needs secretsmanager:GetSecretValue scoped to the gyftr/tech-portal/db secret's ARN, plus standard ECR pull permissions.
-Security group gyftr-tech-portal-backend-sg: accepts port 4000 from the ALB's security group only (created in Step 17).
-Create an ECS service from this task definition, desired count 1 to start, attached to the backend ALB target group (Step 17) — ECS keeps the target group's registered targets in sync with running tasks automatically; there's no manual "register instance" step like there would be with EC2.
-Once the service exists, go back to gyftr-tech-portal-rds-sg (RDS's security group, Step 7) and add an inbound rule: PostgreSQL (5432) from gyftr-tech-portal-backend-sg.
+14. Connect to EC2
+Connect using SSH:
+chmod 400 gyftr-tech-portal-key.pem
 
-15. Step 9 — Frontend hosting: two valid options
-Pick whichever your infra team prefers — both are proven patterns from the sibling apps.
-Option A — S3 + CloudFront (simpler/cheaper): build the frontend (locally or in CI) with the right VITE_* env vars baked in, aws s3 sync dist/ s3://<bucket> --delete, serve via CloudFront with an Origin Access Control. This app has no client-side router (no react-router; navigation is in-memory state, not URL-based), so there's no 404→index.html rewrite rule to configure, unlike a typical SPA.
-Option B — ECS, same as the backend: build the frontend Docker image (root Dockerfile, buildspec.yml) via CodeBuild, run it as a second ECS service (task port 4173), behind its own ALB (or an extra listener rule on the backend's ALB). This is what the repo's Docker/buildspec files are set up for by default.
-Configure Frontend Build-Time Env
-Whichever option: the frontend needs VITE_API_URL, VITE_COGNITO_USER_POOL_ID, VITE_COGNITO_CLIENT_ID baked in at build time (Vite inlines these into the JS bundle — they can't be changed after the fact without rebuilding):
+ssh -i gyftr-tech-portal-key.pem ec2-user@YOUR_EC2_PUBLIC_IP
+
+After connecting:
+# Install Node.js
+curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+sudo dnf install -y nodejs git
+
+# Clone the repository
+git clone https://github.com/yashtahlyani/Gyftr-Tech-portal /app/gyftr-tech-portal
+
+cd /app/gyftr-tech-portal/backend
+
+npm ci --omit=dev
+
+15. Configure Backend Environment
+Inside:
+/app/gyftr-tech-portal/backend
+Create .env:
+cat > .env << 'EOF'
+PORT=4000
+AWS_SECRET_NAME=gyftr-tech-portal/rds
+COGNITO_USER_POOL_ID=YOUR_COGNITO_USER_POOL_ID
+COGNITO_CLIENT_ID=YOUR_COGNITO_CLIENT_ID
+COGNITO_REGION=ap-south-1
+FRONTEND_URL=https://techportal.gyftr.net
+EOF
+
+16. Configure PM2
+PM2 keeps the Node.js backend running continuously.
+Install PM2:
+sudo npm install -g pm2
+
+Start the backend:
+pm2 start server.js --name gyftr-api
+pm2 startup
+pm2 save
+
+Check status:
+pm2 status
+
+For initial testing, access:
+http://YOUR_EC2_IP:4000/health
+
+A healthy API should return:
+{"ok":true}
+
+17. Step 8 — Configure HTTPS with AWS ALB
+The frontend must communicate with the backend through HTTPS.
+The suggested production API URL is:
+https://techportal-api.gyftr.net
+(pick any subdomain you like — just make sure it doesn't collide with any other app already using gyftr.net, and update FRONTEND_URL/VITE_API_URL to match whatever you choose)
+Create SSL Certificate
+Open:
+AWS Console → Certificate Manager → Request Certificate
+Request a certificate for:
+techportal-api.gyftr.net
+Validate ownership using DNS.
+Add the CNAME validation record provided by AWS to the DNS provider.
+Create Application Load Balancer
+Open:
+EC2 → Load Balancers → Create Load Balancer → Application Load Balancer
+Configure:
+Name: gyftr-api-alb
+Scheme: Internet-facing
+HTTPS Listener: Port 443
+Attach the ACM certificate created for techportal-api.gyftr.net
+Target Group
+Create a target group:
+Target Type: Instances
+Backend Port: 4000
+Health check path: /health
+Register the EC2 instance.
+After the ALB is created, copy its DNS name.
+Example:
+gyftr-api-alb.xxxx.elb.amazonaws.com
+DNS Configuration
+Create:
+techportal-api.gyftr.net
+        ↓
+Application Load Balancer
+        ↓
+EC2 Backend :4000
+
+Add the appropriate DNS record pointing techportal-api.gyftr.net to the ALB.
+
+18. Step 9 — Deploy Frontend with S3 & CloudFront
+The suggested production frontend URL is:
+https://techportal.gyftr.net
+Configure Frontend Environment
+Inside the repo root, create .env:
 VITE_API_URL=https://techportal-api.gyftr.net
 VITE_COGNITO_USER_POOL_ID=YOUR_COGNITO_USER_POOL_ID
 VITE_COGNITO_CLIENT_ID=YOUR_COGNITO_CLIENT_ID
 
+Build the frontend:
 npm ci
 npm run build
 
-This generates dist/ (Option A) or is what Dockerfile's build stage does automatically via --build-arg (Option B).
+This generates:
+dist/
 
-16. Step 10 — CodeBuild + CodePipeline
-Create two CodeBuild projects: gyftr-tech-portal-backend-build (buildspec path backend/buildspec.yml) and gyftr-tech-portal-frontend-build (buildspec path buildspec.yml at repo root).
-Both need Privileged mode ON (Docker-in-Docker), ARM/Graviton compute, and an IAM role with ECR push permissions (plus sts:GetCallerIdentity for the frontend project).
-Frontend project additionally needs VITE_COGNITO_USER_POOL_ID, VITE_COGNITO_CLIENT_ID, VITE_API_URL, and FRONTEND_ECS_CONTAINER (the container name in the frontend task definition) as CodeBuild environment variables.
-Wire each into a CodePipeline: Source (this GitHub repo, main branch) → Build (matching CodeBuild project) → Deploy (ECS deploy action, pointed at the matching cluster/service, consuming the imagedefinitions.json artifact).
+19. Create the S3 Bucket
+Open:
+AWS Console → S3 → Create Bucket
+Configure:
+Bucket Name: gyftr-tech-portal-web (bucket names are global — pick something unique if taken)
+Region: ap-south-1
+Block all public access — CloudFront will reach it via Origin Access Control, not a public bucket policy.
+Upload the build:
+aws s3 sync dist/ s3://gyftr-tech-portal-web/ --delete
 
-17. Step 11 — ALB for the backend
-Request a certificate: ACM console → Request a public certificate for techportal-api.gyftr.net → DNS validation → add the CNAME record ACM gives you to your DNS provider → wait for "Issued".
-EC2 console → Load Balancers → Create → Application Load Balancer. Name gyftr-tech-portal-api-alb, internet-facing, the two public subnets from Step 1.
-Security group: allow inbound 443 from 0.0.0.0/0.
-Listener: HTTPS:443, attach the ACM certificate.
-Target group: gyftr-tech-portal-api-tg, target type IP (required for Fargate — not Instance, unlike an EC2 setup), protocol HTTP, port 4000, health check path /health.
-Point the ECS backend service at this target group when creating it (Step 14) rather than registering targets manually.
-Point techportal-api.gyftr.net's DNS (A/ALIAS record) at the ALB's DNS name.
-(If you chose Option B for the frontend in Step 15, repeat this step for it too — separate ALB or an extra listener rule, target group port 4173, health check path /.)
+20. Configure CloudFront
+Open:
+AWS Console → CloudFront → Create Distribution
+Origin
+Select:
+gyftr-tech-portal-web.s3.ap-south-1.amazonaws.com
+Configure:
+Origin Access: Origin Access Control (OAC)
+Create a new OAC and apply the generated S3 bucket policy.
+Viewer Configuration
+Set:
+Viewer Protocol Policy: Redirect HTTP to HTTPS
+Default Root Object: index.html
+SPA Routing
+Not needed for this app — unlike a typical React app, it has no client-side router (no react-router; navigation is in-memory state, not URL-based), so there are no deep-link routes that need a 404→index.html rewrite. Skip this step entirely.
+Custom Domain
+Add:
+techportal.gyftr.net
+Attach an ACM certificate covering the domain — must be requested in us-east-1 specifically; CloudFront only accepts certs from that region regardless of where everything else lives.
+Create the distribution and copy its CloudFront domain name.
+DNS
+Point:
+techportal.gyftr.net
+        ↓
+CloudFront
+        ↓
+S3 Frontend
 
-18. Step 10 — Production Testing
+21. Step 10 — Production Testing
 Once deployment is complete, open:
 https://techportal.gyftr.net
 Perform the following checks:
@@ -341,8 +571,8 @@ Logging out and back in as a different person
 Refreshing the page mid-session
 Once these checks pass, the AWS deployment can be considered live.
 
-19. Deployment Architecture
-The production architecture (Option A frontend — S3+CloudFront):
+22. Deployment Architecture
+The production architecture should be:
 User
   ↓
 techportal.gyftr.net
@@ -355,11 +585,9 @@ techportal-api.gyftr.net
   ↓
 Application Load Balancer
   ↓
-ECS/Fargate — Express Backend (Docker container, built by CodeBuild)
+EC2 — Express Backend
   ↓
 AWS RDS — PostgreSQL
-
-(Option B — ECS frontend instead of S3+CloudFront: the frontend row becomes its own ALB → ECS/Fargate → Docker container, same shape as the backend.)
 
 Authentication is handled separately through:
 Frontend / Backend
@@ -367,31 +595,49 @@ Frontend / Backend
 AWS Cognito
 
 Database credentials are provided securely through:
-ECS Task (Backend)
+EC2 Backend
      ↓
 AWS Secrets Manager
      ↓
 RDS Credentials
 
-20. Deploying Future Updates
-Push to main and CodePipeline handles the rest automatically — no SSH, no manual pm2 restart, no manual Docker build:
-git push origin main
-→ CodePipeline detects the push
-→ CodeBuild builds and pushes a new Docker image to ECR (backend/buildspec.yml or buildspec.yml depending which side changed)
-→ ECS deploy action rolls the corresponding service to the new image (rolling deployment — brief overlap, no downtime)
-
-If you went with Option A for the frontend (S3+CloudFront, not ECS), that side deploys the old-fashioned way instead — either manually or via its own small CI step:
+23. Deploying Future Updates
+Frontend Updates
+When frontend code changes:
+git pull
+npm install
 npm run build
+
 aws s3 sync dist/ s3://gyftr-tech-portal-web/ --delete
-aws cloudfront create-invalidation --distribution-id YOUR_CF_DISTRIBUTION_ID --paths "/*"
 
-To force a one-off redeploy without a code change (e.g. after rotating a secret, so the running task picks up the new value):
-aws ecs update-service --cluster gyftr-tech-portal --service <backend-service-name> --force-new-deployment
+Invalidate the CloudFront cache:
+aws cloudfront create-invalidation \
+  --distribution-id YOUR_CF_DISTRIBUTION_ID \
+  --paths "/*"
 
-To check deploy status or investigate a stuck rollout:
-aws ecs describe-services --cluster gyftr-tech-portal --services <service-name>
+The updated frontend should become available after the invalidation completes.
 
-21. Common Administrative Changes
+24. Backend Updates
+Connect to EC2:
+ssh -i gyftr-tech-portal-key.pem ec2-user@YOUR_EC2_PUBLIC_IP
+
+Then:
+cd /app/gyftr-tech-portal
+
+git pull
+
+cd backend
+npm ci --omit=dev
+
+pm2 restart gyftr-api
+
+Verify:
+pm2 status
+
+If necessary:
+pm2 logs gyftr-api
+
+25. Common Administrative Changes
 Add a New Team Member
 Unlike apps that hardcode role/email mappings in the frontend, this app is entirely database-driven — nobody's team or role lives in source code, so there is no file to edit and no redeploy needed.
 Step 1 — Add the person to RDS
@@ -406,16 +652,16 @@ node create-cognito-users.mjs
 This only creates logins for people who don't already have one, so it's safe to run any time — no need to touch anyone else's account.
 That's it — they'll appear in the app's profile picker on next page load, no rebuild or redeploy required.
 
-22. Add a New Partner / Brand
+26. Add a New Partner / Brand
 Nothing to do here — Partner and Brand are free-text fields with a "pick existing or type a new one" input on the Create Project form (populated from whatever partners/brands already exist across current projects). No static list, no code change, no redeploy.
 
-23. Reset / Change a Password
+27. Reset / Change a Password
 This app deliberately does not use per-user passwords — every account shares default@123 so the one-click profile picker works for everyone, and the frontend always authenticates with that same shared password no matter whose name is clicked (see src/auth.ts's DEMO_PASSWORD).
 If you want a genuinely different password for one specific person, you can set it via:
 AWS Console → Cognito → User Pool → Users → [pick the user] → Actions → Reset Password
 — but be aware this will break that one person's one-click login, since the app will still try to sign them in with default@123 and fail. Don't do this unless you're also ready to move that person (or the whole app) to a real typed-password login form, which is a real follow-up project, not a quick toggle.
 
-24. Troubleshooting
+28. Troubleshooting
 Frontend Shows a Blank Page
 Open browser Developer Tools using F12 and check the Console.
 Verify the frontend environment variables:
@@ -434,44 +680,44 @@ Cognito User Pool ID / Client ID in the frontend's .env match what's actually in
 Login Succeeds But Shows "No Portal Access"
 That Cognito account exists but isn't linked to a people row (people.cognito_sub is null or stale). Re-run node scripts/aws-migration/create-cognito-users.mjs, or check the person actually has a row in people at all.
 Projects Are Not Loading
-Check whether the backend task is running and healthy:
-aws ecs describe-services --cluster gyftr-tech-portal --services <backend-service-name>
+Check whether the backend is running.
+SSH into EC2 and execute:
+pm2 status
 
-If tasks are stuck/crash-looping, check the logs:
-aws logs tail /ecs/gyftr-tech-portal-backend --follow
+If gyftr-api is stopped or errored:
+pm2 logs gyftr-api
 
-(Or in the console: ECS → cluster → service → Logs tab.) Also check GET <API_URL>/health/deep directly — it reports the real DB-readiness error if the process is up but can't reach RDS.
+Restart if necessary:
+pm2 restart gyftr-api
 
 Backend Cannot Connect to Database
 Check:
 RDS instance is running.
-The backend ECS service's security group has a path to RDS.
-gyftr-tech-portal-rds-sg permits PostgreSQL traffic (5432) from the backend service's security group.
-Secrets Manager's gyftr/tech-portal/db secret contains the correct database credentials.
-The ECS task execution role can read that secret (secretsmanager:GetSecretValue on its ARN).
+EC2 has network access to RDS.
+gyftr-rds-sg permits PostgreSQL traffic (5432) from gyftr-api-sg.
+Secrets Manager's gyftr-tech-portal/rds secret contains the correct database credentials.
+EC2's IAM role can read that secret.
 CloudFront Shows an Old Version
 Create a cache invalidation:
 aws cloudfront create-invalidation \
   --distribution-id YOUR_CF_DISTRIBUTION_ID \
   --paths "/*"
 
-(Only relevant if you went with Option A — S3+CloudFront — for the frontend.)
 Backend API Is Not Accessible
 Check:
-aws ecs describe-services --cluster gyftr-tech-portal --services <backend-service-name>
-aws logs tail /ecs/gyftr-tech-portal-backend --follow
+pm2 status
+pm2 logs gyftr-api
 
 Then verify:
-ECS service's desired count matches its running count (a mismatch means tasks are failing to start or failing health checks and getting cycled).
+EC2 instance is running.
 ALB target is healthy (health check hits /health).
-Target group uses port 4000 and target type IP (not Instance — a common misconfiguration when following EC2-era instructions by habit).
+Target group uses port 4000.
 HTTPS listener is configured with a valid ACM certificate.
 DNS for techportal-api.gyftr.net points to the correct ALB.
-scripts/aws-migration/doctor.js walks through all of the above automatically — run it first before working through this list by hand.
 Nobody Sees a Teammate's Change Immediately
 Expected — this app polls for updates every ~7 seconds rather than pushing changes instantly (the old Supabase version had instant push via Realtime; this was a deliberate simplification for the AWS rebuild, since instant push would need extra infrastructure — WebSockets or similar). If this turns out to matter in practice, it's a real follow-up project, not a quick fix.
 
-25. Post-Migration Security Checklist
+29. Post-Migration Security Checklist
 After confirming that the AWS version works correctly:
 Verify all Supabase data has migrated successfully.
 Compare record counts between Supabase and RDS (people, projects, subtasks, comments, attachments, stage_history, stage_targets).
@@ -479,23 +725,23 @@ Test major portal functionality per Section 21.
 Rotate/revoke the Supabase service_role key used for migration.
 Rotate any Supabase personal access token that was ever pasted into chat, a ticket, or a doc during this project — treat those as already compromised regardless of whether they were "meant" to be temporary.
 Remove unnecessary AWS access keys and temporary IAM permissions.
-Confirm RDS has no public access, and is reachable only from the backend ECS service's security group.
-Confirm the backend's port (4000) is reachable only from the ALB's security group, not the open internet — a Fargate task has no SSH surface to worry about, but the security group still needs to be locked down the same way an EC2 instance's would.
+Confirm RDS has no public access, and is reachable only from gyftr-api-sg.
+Confirm EC2's application port (4000) is reachable only from the ALB's security group, not the open internet.
 Keep the S3 frontend bucket private behind CloudFront OAC.
 Confirm HTTPS is enforced on both the frontend and API domains.
 Confirm .env files are excluded from Git (they are, by default — check with git check-ignore backend/.env .env if unsure).
 Confirm no passwords or API keys are hardcoded anywhere in the committed source (a full-repo secret scan was already run before this code was pushed, but re-check after any future changes).
 
-26. Final Go-Live Checklist
+30. Final Go-Live Checklist
 Before declaring the migration complete, confirm:
 Infrastructure
-RDS PostgreSQL is running (schema applies itself automatically the moment the backend task first starts — nothing to load manually).
+RDS PostgreSQL is running, schema loaded.
 Cognito user pool is configured with both required auth flows enabled.
 All 21 real people have Cognito logins, linked via cognito_sub.
-Backend ECS service is running with running count = desired count, and GET /health/deep returns ok.
+EC2 backend is running and pm2 status shows it healthy.
 Application Load Balancer target is healthy.
-Frontend is deployed (S3+CloudFront, or its own ECS service — whichever option was chosen).
-CodePipeline has completed successfully for both sides at least once.
+S3 frontend is deployed.
+CloudFront distribution is active.
 SSL certificates are valid on both domains.
 DNS records resolve correctly.
 Application
@@ -510,11 +756,11 @@ Security
 Temporary AWS credentials have been removed.
 Supabase service_role key has been rotated.
 RDS is not publicly reachable.
-The backend's API port is restricted to the ALB's security group.
-Production credentials are stored in Secrets Manager / ECS task environment variables, not in the repo or baked into any Docker image.
+EC2's API port is restricted to the ALB.
+Production credentials are stored in Secrets Manager / environment variables, not in the repo.
 Once all items above have been verified, the migration and production handover are complete.
 
-27. Quick Reference
+31. Quick Reference
 Production Frontend
 https://techportal.gyftr.net (suggested — confirm with whoever owns gyftr.net's DNS)
 Production API
@@ -528,33 +774,31 @@ gyftr-tech-portal
 Database User
 gyftr_admin
 Cognito User Pool
-gyftr-tech-portal-users
+gyftr-tech-portal
 Cognito App Client
 gyftr-tech-portal-web
-ECS Cluster
-gyftr-tech-portal
-Backend ECR Repo
-gyftr-tech-portal-backend
-Frontend ECR Repo
-gyftr-tech-portal-frontend
+EC2 Instance
+gyftr-tech-portal-api
+Backend PM2 Process
+gyftr-api
 Secrets Manager Secret
-gyftr/tech-portal/db
-Frontend S3 Bucket (Option A only)
+gyftr-tech-portal/rds
+Frontend S3 Bucket
 gyftr-tech-portal-web
 Frontend Domain
 techportal.gyftr.net (suggested)
 Backend Domain
 techportal-api.gyftr.net (suggested)
 
-28. Handover Notes
+32. Handover Notes
 The application has been structured so that the AWS deployment replaces the previous Supabase-based infrastructure while retaining the existing portal functionality and historical data. Every authorization rule that used to live in Supabase's Row-Level Security policies has been ported 1:1 into backend/authz.js — if you ever need to change who's allowed to do what, that's the one file to look at (its comments cite exactly which old policy each function replaces).
-This deployment mechanism (Docker → CodeBuild → ECR → ECS/Fargate) and most of the naming conventions in this doc deliberately match the sibling gyftr-portal (Marketing) and gyftr-legal apps, which already run this exact way in production — when in doubt about how a step should actually work in practice, those two repos' Dockerfile/buildspec.yml/infra docs are a working reference, not just this document's word for it.
 The most important responsibilities for the new maintainer are:
 Keep production credentials secure.
 Verify RDS backups are enabled and tested.
 Test role-based access whenever people are added or their team/role changes.
-Deploy changes by pushing to main — CodePipeline builds and rolls out both sides automatically (see Section 20). Don't SSH into anything or hand-restart a process; if a deploy seems stuck, check CodePipeline's execution history and the ECS service's event log before trying anything manual.
-Monitor backend logs via CloudWatch Logs (aws logs tail /ecs/gyftr-tech-portal-backend --follow, or the ECS console's Logs tab) when API issues occur.
+Deploy frontend changes through S3 and CloudFront.
+Deploy backend changes through EC2 and PM2.
+Monitor backend logs (pm2 logs gyftr-api) when API issues occur.
 Keep AWS permissions limited to what each service actually requires.
 Maintain the GitHub repository as the single source of truth for application code.
 Do not delete or permanently disable the old Supabase project until the migrated AWS system has been thoroughly tested and the migrated data has been verified against it.

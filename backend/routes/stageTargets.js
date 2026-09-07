@@ -6,11 +6,10 @@ const { withTransaction } = require("../db");
 const authz = require("../authz");
 const { checkStageTargetOrder } = require("../projectScope");
 const { stageTargets } = require("../serialize");
-const { asyncHandler } = require("../asyncHandler");
 
 const router = express.Router();
 
-router.put("/:projectId/:stage", asyncHandler("PUT /api/stage-targets/:projectId/:stage", async (req, res) => {
+router.put("/:projectId/:stage", async (req, res) => {
   const { projectId, stage } = req.params;
   const { expectedDate } = req.body;
   const result = await withTransaction(async (client) => {
@@ -37,6 +36,6 @@ router.put("/:projectId/:stage", asyncHandler("PUT /api/stage-targets/:projectId
   });
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
   res.json(stageTargets(result.rows));
-}));
+});
 
 module.exports = router;
