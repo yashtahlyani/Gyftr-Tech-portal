@@ -1,6 +1,9 @@
 import { useState } from "react";
-import { X } from "lucide-react";
-import { createProject } from "../store";
+import { X, Paperclip } from "lucide-react";
+import { createProject, addAttachment } from "../store";
+import type { DocKind } from "../types";
+
+const DOC_KINDS: DocKind[] = ["BRD", "PRD", "Figma", "HTML", "Doc"];
 
 /** A select of known values with an inline "+ Add new" escape hatch — used for
  *  Partner and Brand, which the CEO wants as pick-lists, not free text, but a
@@ -48,6 +51,23 @@ export function CreateModal({ meId, partners, brands, onClose }: {
   const [target, setTarget] = useState("");
   const valid = title.trim() && partner.trim();
 
+  // Requirement docs (BRD, Figma links, etc.) attached while raising the
+  // project — held locally until the project actually exists, since
+  // attachments need a real project id, then flushed right after create.
+  const [pendingDocs, setPendingDocs] = useState<{ name: string; kind: DocKind; url: string }[]>([]);
+  const [docKind, setDocKind] = useState<DocKind>("BRD");
+  const [docName, setDocName] = useState("");
+  const [docUrl, setDocUrl] = useState("");
+
+  function addDoc() {
+    if (!docName.trim()) return;
+    setPendingDocs((docs) => [...docs, { name: docName.trim(), kind: docKind, url: docUrl.trim() }]);
+    setDocName(""); setDocUrl("");
+  }
+  function removeDoc(i: number) {
+    setPendingDocs((docs) => docs.filter((_, x) => x !== i));
+  }
+
   const [saving, setSaving] = useState(false);
 
   async function submit() {
@@ -65,6 +85,7 @@ export function CreateModal({ meId, partners, brands, onClose }: {
         priorityMonth: null, timelineEta: null, devEffortDays: null, reasonForDelay: null,
         productSpocId: null, techLeadId: null,
       });
+      for (const doc of pendingDocs) addAttachment(p.id, meId, doc.name, doc.kind, doc.url || undefined);
       onClose(p.id);
     } catch (err) {
       setSaving(false);
@@ -90,6 +111,25 @@ export function CreateModal({ meId, partners, brands, onClose }: {
           <div className="field">
             <label>Requirement / BRD</label>
             <textarea className="input" value={brd} onChange={(e) => setBrd(e.target.value)} placeholder="What does the business need and why?" />
+            {pendingDocs.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 8 }}>
+                {pendingDocs.map((doc, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>
+                    <span className="pill" style={{ background: "var(--pop-soft)", color: "var(--pop-deep)", flex: "none" }}>{doc.kind}</span>
+                    <span style={{ flex: 1, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</span>
+                    <button type="button" className="icon-btn" style={{ width: 20, height: 20, flex: "none" }} onClick={() => removeDoc(i)}><X size={11} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <select className="select sm" style={{ flex: "none" }} value={docKind} onChange={(e) => setDocKind(e.target.value as DocKind)}>
+                {DOC_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+              <input className="input" style={{ flex: 1 }} placeholder="Label (e.g. Godrej BRD)…" value={docName} onChange={(e) => setDocName(e.target.value)} />
+              <input className="input" style={{ flex: 1 }} placeholder="https://link…" value={docUrl} onChange={(e) => setDocUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addDoc())} />
+              <button type="button" className="btn sm" style={{ flex: "none" }} onClick={addDoc}><Paperclip size={12} /> Add</button>
+            </div>
           </div>
           <div className="row">
             <PickOrAdd label="Partner" value={partner} onChange={setPartner} options={partners} placeholder="Godrej" />
