@@ -33,7 +33,14 @@ create table people (
   -- Explicit, named "sees every project" grant — data-driven, not a
   -- hierarchy derivation. Visibility only; doesn't imply write access the
   -- way is_overseer()'s pmo/leadership does.
-  sees_all_projects boolean not null default false
+  sees_all_projects boolean not null default false,
+  -- false = retired from the directory (e.g. a superseded hierarchy import).
+  -- Row stays for FK/history integrity — old projects still resolve the
+  -- name — but they must never appear as an assignment/owner candidate.
+  -- Filtered out client-side (roles.ts leadOf, Drawer.tsx/FilterBar.tsx
+  -- pickers); not an RLS concern since it's a UI-candidate-list rule, not
+  -- an authorization rule.
+  active      boolean not null default true
 );
 
 -- ── Identity helpers (SECURITY DEFINER so RLS policies can call them) ──

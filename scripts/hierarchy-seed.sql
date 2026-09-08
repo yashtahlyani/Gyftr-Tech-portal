@@ -4,8 +4,10 @@
 --
 -- This REPLACES an earlier hierarchy import (SVP/AVP/TL, transcribed from
 -- a different Excel on 2026-09-07) — that whole roster is retired below,
--- not deleted (their rows stay for FK/history integrity, just can't log in
--- anymore). Two people are carried over as merges, not new rows: Anandita
+-- not deleted (their rows stay for FK/history integrity — old projects
+-- still resolve their name — just active=false, so they can't log in and
+-- never appear in any assignment/owner picker). Two people are carried
+-- over as merges, not new rows: Anandita
 -- and Pooja were existing accounts touched by the retired import; this
 -- script reverts their hierarchy fields (they're not in the new roster
 -- either) while leaving their team/role exactly as already decided.
@@ -30,7 +32,7 @@ with recursive old_tree as (
   union all
   select p.id from people p join old_tree t on p.manager_id = t.id
 )
-update people set auth_id = null
+update people set auth_id = null, active = false
  where id in (select id from old_tree)
    and email not in ('anandita@gyftr.net', 'pooja@gyftr.net');
 

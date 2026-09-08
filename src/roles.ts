@@ -199,10 +199,13 @@ export function canHold(me: Person, proj: Project): boolean {
 }
 export const canUnhold = canHold;
 
-/** Lead (or any member) of a team, to hand the ball to. */
+/** Lead (or any member) of a team, to hand the ball to. Retired directory
+ *  entries (active === false — a superseded hierarchy import, kept only for
+ *  FK/history integrity) must never be picked as a new owner. */
 export function leadOf(team: string): string {
-  const lead = PEOPLE.find((p) => p.team === team && p.role === "lead");
-  return (lead ?? PEOPLE.find((p) => p.team === team) ?? PEOPLE[0]).id;
+  const pool = PEOPLE.filter((p) => p.active !== false);
+  const lead = pool.find((p) => p.team === team && p.role === "lead");
+  return (lead ?? pool.find((p) => p.team === team) ?? pool[0] ?? PEOPLE[0]).id;
 }
 
 /** Who owns the ball after a transition — the picker keeps dev pickups, else the target lead. */

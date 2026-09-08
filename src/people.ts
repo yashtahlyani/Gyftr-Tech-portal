@@ -10,15 +10,15 @@ export let PEOPLE: Person[] = isCloud ? [] : SEED_PEOPLE;
 export let PEOPLE_BY_ID: Record<string, Person> = isCloud ? {} : SEED_PEOPLE_BY_ID;
 export let peopleLoaded = !isCloud;
 
-function fromRow(r: { id: string; name: string; team: Person["team"]; role: Person["role"]; email: string; manager_id?: string | null; department?: string | null; sees_all_projects?: boolean | null }): Person {
-  return { id: r.id, name: r.name, team: r.team, role: r.role, email: r.email, managerId: r.manager_id ?? undefined, department: r.department ?? undefined, seesAllProjects: r.sees_all_projects ?? false };
+function fromRow(r: { id: string; name: string; team: Person["team"]; role: Person["role"]; email: string; manager_id?: string | null; department?: string | null; sees_all_projects?: boolean | null; active?: boolean | null }): Person {
+  return { id: r.id, name: r.name, team: r.team, role: r.role, email: r.email, managerId: r.manager_id ?? undefined, department: r.department ?? undefined, seesAllProjects: r.sees_all_projects ?? false, active: r.active ?? true };
 }
 
 let loadPromise: Promise<void> | null = null;
 
 async function fetchPeople(): Promise<void> {
   if (!supabase) return;
-  const { data, error } = await supabase.from("people").select("id,name,team,role,email,manager_id,department,sees_all_projects");
+  const { data, error } = await supabase.from("people").select("id,name,team,role,email,manager_id,department,sees_all_projects,active");
   if (error) { console.error("Failed to load people directory:", error.message); return; }
   PEOPLE = (data ?? []).map(fromRow);
   PEOPLE_BY_ID = Object.fromEntries(PEOPLE.map((p) => [p.id, p]));

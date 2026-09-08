@@ -29,6 +29,11 @@ export interface Person {
    *  not a hierarchy derivation. Visibility only; doesn't imply write access
    *  the way PMO/leadership's overseer status does. */
   seesAllProjects?: boolean;
+  /** false = retired from the directory (e.g. the 2026-09-07 hierarchy import,
+   *  superseded the next day). Row stays for FK/history integrity — old
+   *  projects still resolve their name — but they must never appear as an
+   *  assignment/owner *candidate*. Defaults to true (undefined = active). */
+  active?: boolean;
 }
 
 /** Pipeline lane a project sits in (drives the board columns + who owns the ball). */
