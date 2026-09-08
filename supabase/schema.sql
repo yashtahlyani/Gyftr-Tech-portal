@@ -90,6 +90,42 @@ $$;
 create or replace function is_svp() returns boolean language sql stable security definer as $$
   select coalesce(my_role() = 'svp', false);
 $$;
+
+-- True if this person is part of any manager_id-linked hierarchy at all
+-- (has a manager, or has reports). Mirrored client-side in roles.ts's
+-- isHierarchyPerson.
+create or replace function is_hierarchy_person() returns boolean language sql stable security definer as $$
+  select exists (
+    select 1 from people me
+    where me.auth_id = auth.uid()
+      and (me.manager_id is not null or exists (select 1 from people r where r.manager_id = me.id))
+  );
+$$;
+-- Direct-or-indirect manager, i.e. has at least one direct report. The actor
+-- class allowed to assign new to_be_picked-stage work to a specific report,
+-- rather than everyone on the team self-serving. Mirrored in roles.ts's
+-- isManager (= hasReports).
+create or replace function is_manager() returns boolean language sql stable security definer as $$
+  select exists (
+    select 1 from people me join people r on r.manager_id = me.id
+    where me.auth_id = auth.uid()
+  );
+$$;
+-- True where the old blanket "my team holds court" visibility/action rule
+-- would leak across hierarchy branches — specifically the 3 team_id values
+-- (development/qa/design) that coarsely cram ~15 real Tech departments into
+-- one workflow court. Product/Business/Tech-SPOC courts map 1:1 to real
+-- departments and never hit this, even for people who happen to carry a
+-- manager_id (e.g. Anandita, a Product lead who also appears in the Tech org
+-- chart) — gating on team, not merely "is in a hierarchy", avoids stripping
+-- their normal team-court visibility. Mirrored in roles.ts's
+-- hasCoarseTeamLeak. Discovered live: without this, every Tech-hierarchy
+-- person could see every other branch's in-court work purely because they
+-- all share team='development'/'qa'/'design' — see git history.
+create or replace function has_coarse_team_leak() returns boolean language sql stable security definer as $$
+  select coalesce(my_team() in ('development','qa','design'), false) and is_hierarchy_person();
+$$;
+
 -- Explicit, named "sees every project" grant — mirrors people.sees_all_projects.
 create or replace function sees_all_projects() returns boolean language sql stable security definer as $$
   select coalesce((select p.sees_all_projects from people p where p.auth_id = auth.uid()), false);
@@ -222,12 +258,17 @@ create table attachments (
 );
 
 -- Can the current user SEE this project? Overseer, global-view grant, team
--- involved, or — structurally, for anyone with reports (any depth, any
--- tier) — any person-reference on the project falls in their subtree.
+-- involved (unless has_coarse_team_leak() — see that function's comment: a
+-- Tech-hierarchy person's team-court is too coarse to trust on its own), a
+-- manager's to_be_picked queue for their own reports' team, or —
+-- structurally, for anyone with reports (any depth, any tier) — any
+-- person-reference on the project falls in their subtree.
 create or replace function can_see(pid uuid) returns boolean language sql stable security definer as $$
   select is_overseer() or sees_all_projects() or exists (
     select 1 from projects p where p.id = pid and (
-      my_team() = any(p.involved_teams)
+      (my_team() = any(p.involved_teams) and not has_coarse_team_leak())
+      or (is_manager() and p.stage = 'to_be_picked'
+          and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
       or p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
       or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
       or exists (select 1 from subtasks st where st.project_id = p.id and st.assignee_id = any(my_subtree_ids()))
@@ -268,10 +309,16 @@ alter table stage_targets enable row level security;
 -- reports — any person-reference on the project falls in their subtree.
 -- Enforced here, not just in the UI (roles.ts's subtreeVisibleTo is the
 -- client-side mirror, applied additively for the same UX).
+-- Team-court branch excludes has_coarse_team_leak() actors (see that
+-- function's comment); the to_be_picked branch instead gives a manager
+-- visibility of their own reports' pickup queue — "manager assigns, no
+-- self-serve pickup" for Tech-hierarchy people specifically.
 create policy p_sel on projects for select using (
   is_overseer()
   or sees_all_projects()
-  or my_team() = any(involved_teams)
+  or (my_team() = any(involved_teams) and not has_coarse_team_leak())
+  or (is_manager() and stage = 'to_be_picked'
+      and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
   or owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
   or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
   or exists (select 1 from subtasks st where st.project_id = projects.id and st.assignee_id = any(my_subtree_ids()))
@@ -284,11 +331,32 @@ create policy p_ins on projects for insert with check ( is_pmo() or my_team() in
 -- enforce_project_update_scope() below then restricts this actor to ONLY the
 -- hold columns, mirroring exactly how the product-lead case is restricted to
 -- ONLY the date columns.
+--
+-- Every "my_team() = owner_team"/"my_team() = any(involved_teams)"-style
+-- branch below is paired with "and not has_coarse_team_leak()" for the same
+-- reason as p_sel above: a Tech-hierarchy person's team-court is too coarse
+-- to grant action rights on its own. Their equivalent branches instead key
+-- off owner_id/etc falling in their own subtree, or (for to_be_picked) being
+-- a manager assigning to a report on the receiving team.
 create policy p_upd on projects for update
   using (
-    is_pmo() or my_team() = owner_team or (stage = 'to_be_picked' and my_team() = 'development')
+    is_pmo()
+    or (my_team() = owner_team and not has_coarse_team_leak())
+    or (stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
+    or (is_manager() and stage = 'to_be_picked'
+        and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
+    or (owner_id = any(my_subtree_ids()) and my_team() = owner_team)
     or (my_role() = 'lead' and my_team() = 'product')
-    or (my_role() not in ('leadership', 'svp') and my_team() <> 'business' and my_team() = any(involved_teams))
+    or (
+      my_role() not in ('leadership', 'svp') and my_team() <> 'business'
+      and (
+        (my_team() = any(involved_teams) and not has_coarse_team_leak())
+        or (has_coarse_team_leak() and (
+          owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
+          or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
+        ))
+      )
+    )
   )
   with check (
     is_pmo() or my_team() = any(involved_teams)
@@ -342,7 +410,13 @@ begin
   then
     return new;
   end if;
-  if is_pmo() or my_team() = old.owner_team or (old.stage = 'to_be_picked' and my_team() = 'development') then
+  if is_pmo()
+    or (my_team() = old.owner_team and not has_coarse_team_leak())
+    or (old.stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
+    or (is_manager() and old.stage = 'to_be_picked'
+        and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
+    or (old.owner_id = any(my_subtree_ids()) and my_team() = old.owner_team)
+  then
     return new;
   end if;
   if my_role() = 'lead' and my_team() = 'product' then
@@ -373,7 +447,15 @@ begin
   -- Parallel carve-out for the p_upd hold branch: any non-Business team
   -- already involved, acting outside their own court, may change ONLY the
   -- hold columns. Leadership/SVP excluded (same reasoning as the RLS policy).
-  if my_role() not in ('leadership', 'svp') and my_team() <> 'business' and my_team() = any(old.involved_teams) then
+  -- has_coarse_team_leak() actors use subtree-reference in place of plain
+  -- team-involvement, same reasoning as everywhere else in this trigger.
+  if my_role() not in ('leadership', 'svp') and my_team() <> 'business' and (
+       (my_team() = any(old.involved_teams) and not has_coarse_team_leak())
+       or (has_coarse_team_leak() and (
+         old.owner_id = any(my_subtree_ids()) or old.business_owner_id = any(my_subtree_ids())
+         or old.tech_lead_id = any(my_subtree_ids()) or old.product_spoc_id = any(my_subtree_ids())
+       ))
+     ) then
     if new.title is distinct from old.title
       or new.brd is distinct from old.brd
       or new.partner is distinct from old.partner

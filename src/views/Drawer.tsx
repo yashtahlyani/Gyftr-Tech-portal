@@ -23,7 +23,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
     </div>
   );
 }
-import { can, canPerformTransition, canCreateSubtask, canEditStageTarget, canAddAttachment, canHold, isOverseer, ownerTeam, ownerForTransition } from "../roles";
+import { can, canPerformTransition, canCreateSubtask, canEditStageTarget, canAddAttachment, canHold, isOverseer, ownerTeam, ownerForTransition, candidatesForTeam } from "../roles";
 import { PEOPLE, PEOPLE_BY_ID } from "../people";
 import { daysBetween, relTime, fmtDate } from "../lib";
 import type { SubtaskPatch } from "../cloudStore";
@@ -35,10 +35,13 @@ const kindIcon = (k: string) => (k === "forward" ? Hand : k === "reopen" ? Rotat
 /** A transition action paired with an explicit "who exactly is this for" picker,
  *  scoped to the receiving team — beats silently auto-assigning to a guessed lead. */
 function TransitionButton({
-  spec, me, primary, danger, onFire,
-}: { spec: TransitionSpec; me: Person; primary?: boolean; danger?: boolean; onFire: (spec: TransitionSpec, ownerId: string) => void }) {
-  const candidates = PEOPLE.filter((p) => p.team === spec.ownerTeam && p.active !== false);
-  const [to, setTo] = useState(() => ownerForTransition(spec, me));
+  spec, me, fromStage, primary, danger, onFire,
+}: { spec: TransitionSpec; me: Person; fromStage: StageId; primary?: boolean; danger?: boolean; onFire: (spec: TransitionSpec, ownerId: string) => void }) {
+  const candidates = candidatesForTeam(me, PEOPLE, spec.ownerTeam, fromStage);
+  const [to, setTo] = useState(() => {
+    const def = ownerForTransition(spec, me);
+    return candidates.some((p) => p.id === def) ? def : candidates[0]?.id ?? "";
+  });
   const Icon = kindIcon(spec.kind);
   return (
     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -61,8 +64,8 @@ function TransitionButton({
  *  route to Tech SPOC's queue, or straight to a specific dev), this is one
  *  merged "who's this for" picker spanning every team involved — pick the
  *  person, the path (stage/status) follows from whichever team they're on. */
-function ForwardPicker({ forwards, me, onFire }: { forwards: TransitionSpec[]; me: Person; onFire: (spec: TransitionSpec, ownerId: string) => void }) {
-  const options = forwards.flatMap((spec) => PEOPLE.filter((p) => p.team === spec.ownerTeam && p.active !== false).map((person) => ({ person, spec })));
+function ForwardPicker({ forwards, me, fromStage, onFire }: { forwards: TransitionSpec[]; me: Person; fromStage: StageId; onFire: (spec: TransitionSpec, ownerId: string) => void }) {
+  const options = forwards.flatMap((spec) => candidatesForTeam(me, PEOPLE, spec.ownerTeam, fromStage).map((person) => ({ person, spec })));
   const defaultId = ownerForTransition(forwards[0], me);
   const [selectedId, setSelectedId] = useState(() => (options.some((o) => o.person.id === defaultId) ? defaultId : options[0]?.person.id ?? ""));
   const selected = options.find((o) => o.person.id === selectedId) ?? options[0];
@@ -386,7 +389,7 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
             )}
             {availableForwards.length > 0 && (
               <div style={{ marginTop: 11 }}>
-                <ForwardPicker forwards={availableForwards} me={me} onFire={doTransition} />
+                <ForwardPicker forwards={availableForwards} me={me} fromStage={project.stage} onFire={doTransition} />
               </div>
             )}
             {!anyAction && (
@@ -443,7 +446,7 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
               )}
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {canBack && backs.map((t) => (
-                  <TransitionButton key={t.to + t.kind} spec={t} me={me} danger={t.kind === "reject" || t.kind === "reopen"} onFire={doTransition} />
+                  <TransitionButton key={t.to + t.kind} spec={t} me={me} fromStage={project.stage} danger={t.kind === "reject" || t.kind === "reopen"} onFire={doTransition} />
                 ))}
                 {can("block", me, project) && (
                   <button className="btn sm" onClick={() => setBlock(project.id, !project.blocked, project.blocked ? undefined : "Blocked — reason pending")}>

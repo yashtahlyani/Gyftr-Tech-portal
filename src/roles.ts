@@ -22,6 +22,27 @@ export const hasGlobalView = (p: Person) => isOverseer(p) || p.seesAllProjects =
 export function hasReports(me: Person, all: Person[]): boolean {
   return all.some((p) => p.managerId === me.id);
 }
+/** True if this person is part of any manager_id-linked hierarchy at all
+ *  (has a manager, or has reports). Mirrors the DB's is_hierarchy_person(). */
+export function isHierarchyPerson(me: Person, all: Person[]): boolean {
+  return !!me.managerId || hasReports(me, all);
+}
+/** Direct-or-indirect manager, i.e. has at least one report. Mirrors the
+ *  DB's is_manager() — the actor class allowed to assign new pickup-stage
+ *  work to a specific report, rather than everyone on the team self-serving. */
+export const isManager = hasReports;
+/** True where the old blanket "my team holds court" visibility/action rule
+ *  would leak across hierarchy branches — specifically the 3 team_id values
+ *  (development/qa/design) that coarsely cram ~15 real Tech departments into
+ *  one workflow court. Product/Business/Tech-SPOC courts map 1:1 to real
+ *  departments and never hit this, even for people who happen to carry a
+ *  manager_id (e.g. Anandita, a Product lead who also appears in the Tech
+ *  org chart) — gating on team, not merely "is in a hierarchy", avoids
+ *  stripping their normal team-court visibility. Mirrors the DB's
+ *  has_coarse_team_leak() exactly. */
+export function hasCoarseTeamLeak(me: Person, all: Person[]): boolean {
+  return (me.team === "development" || me.team === "qa" || me.team === "design") && isHierarchyPerson(me, all);
+}
 /** Board/list/escalations/overview nav (vs. queue/team) — overseers, anyone
  *  with a global-view grant, and anyone who has real reports (their subtree
  *  visibility is more useful through the full board than "my court"). */
@@ -40,7 +61,14 @@ export function ownerTeam(p: Project): TeamId {
  *  the named assignee grants visibility (see visibleTo), never cross-team action. */
 export function isMine(me: Person, proj: Project): boolean {
   if (proj.stage === "live") return false;
-  return ownerTeam(proj) === me.team;
+  if (ownerTeam(proj) !== me.team) return false;
+  if (!hasCoarseTeamLeak(me, PEOPLE)) return true;
+  // Coarse-team-leak actors: in-court isn't enough on its own — the project
+  // must actually be assigned within their own subtree (they're the owner,
+  // or the owner reports to them at any depth). Mirrors the DB's p_upd
+  // "owner_id = any(my_subtree_ids()) and my_team() = owner_team" branch.
+  const subtree = orgSubtreeIds(me, PEOPLE);
+  return !!proj.ownerId && subtree.has(proj.ownerId);
 }
 
 /** Every team that has been (or is) part of a project's journey. Keyed off the
@@ -138,9 +166,33 @@ export function can(action: Action, me: Person, proj?: Project): boolean {
   if (action === "create") return ["business", "product", "tech_spoc"].includes(me.team) || me.role === "pmo";
   if (!proj) return me.role === "pmo";
   if (me.role === "pmo") return true;               // PMO is the process owner
-  if (action === "pickup")
-    return proj.stage === "to_be_picked" && ["tech_spoc", "development"].includes(me.team);
+  if (action === "pickup") {
+    if (proj.stage !== "to_be_picked" || !["tech_spoc", "development"].includes(me.team)) return false;
+    if (!hasCoarseTeamLeak(me, PEOPLE)) return true;
+    // Manager-assign model: a coarse-team-leak actor may only pick up new
+    // work for their OWN reports, and only if they actually have any on the
+    // receiving team — self-serve pickup by an individual contributor is
+    // off; mirrors the DB's is_manager() + subtree-has-tech_spoc/development
+    // branch on p_upd exactly.
+    if (!isManager(me, PEOPLE)) return false;
+    const subtree = orgSubtreeIds(me, PEOPLE);
+    return PEOPLE.some((p) => subtree.has(p.id) && (p.team === "tech_spoc" || p.team === "development"));
+  }
   return isMine(me, proj);                           // otherwise: only the team in-court acts
+}
+
+/** Candidate pool for a "who exactly is this for" picker, for a transition
+ *  landing on `team` out of `fromStage`. Ordinarily just everyone active on
+ *  that team; for a coarse-team-leak manager assigning fresh to_be_picked
+ *  work, narrows to their own reports on that team only — mirrors can()'s
+ *  "pickup" gating so the picker never offers someone the write would reject. */
+export function candidatesForTeam(me: Person, all: Person[], team: TeamId, fromStage: StageId): Person[] {
+  const pool = all.filter((p) => p.team === team && p.active !== false);
+  if (fromStage === "to_be_picked" && hasCoarseTeamLeak(me, all)) {
+    const subtree = orgSubtreeIds(me, all);
+    return pool.filter((p) => subtree.has(p.id));
+  }
+  return pool;
 }
 
 /** Whether `me` can act on a *specific* transition. Almost always just `can("advance"/"pickup")`,
@@ -195,7 +247,12 @@ export function canAddAttachment(me: Person, proj: Project): boolean {
 export function canHold(me: Person, proj: Project): boolean {
   if (me.role === "pmo") return true;
   if (me.role === "leadership" || me.role === "svp") return false;
-  return me.team !== "business" && teamsInvolved(proj).has(me.team);
+  if (me.team === "business") return false;
+  if (!hasCoarseTeamLeak(me, PEOPLE)) return teamsInvolved(proj).has(me.team);
+  // Coarse-team-leak actors: same subtree-based reference check as p_upd's
+  // hold branch, in place of the plain team-involvement check above.
+  const subtree = orgSubtreeIds(me, PEOPLE);
+  return subtreeVisibleTo(proj, subtree);
 }
 export const canUnhold = canHold;
 
