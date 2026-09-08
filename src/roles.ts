@@ -8,12 +8,26 @@ export type Action =
   | "clarify" | "reopen" | "assign" | "comment" | "subtask";
 
 export const isOverseer = (p: Person) => p.role === "pmo" || p.role === "leadership";
-/** Leadership and SVPs are pure read-only observers — full (leadership) or
- *  subtree-scoped (SVP) visibility, zero edits beyond leaving comments. */
+/** Leadership and (legacy) SVP-role people are pure read-only observers.
+ *  The current org hierarchy (any depth — see orgSubtreeIds/hasReports below)
+ *  doesn't need this: its people are structurally read-only already, since
+ *  their team never holds court on any pipeline stage. */
 export const isReadOnly = (p: Person) => p.role === "leadership" || p.role === "svp";
-/** SVPs get the same nav shape as overseers (board/list/escalations/overview,
- *  no queue/team) — they're leadership within their branch, not contributors. */
-export const hasOrgNav = (p: Person) => isOverseer(p) || p.role === "svp";
+/** Explicit, named "sees every project" grant (people.sees_all_projects) —
+ *  data-driven, not a hierarchy derivation. Visibility only; doesn't imply
+ *  write access the way PMO/leadership's overseer status does. */
+export const hasGlobalView = (p: Person) => isOverseer(p) || p.seesAllProjects === true;
+/** True if anyone reports (directly or indirectly) to this person — i.e.
+ *  they're a node with real descendants, not a leaf. Purely structural. */
+export function hasReports(me: Person, all: Person[]): boolean {
+  return all.some((p) => p.managerId === me.id);
+}
+/** Board/list/escalations/overview nav (vs. queue/team) — overseers, anyone
+ *  with a global-view grant, and anyone who has real reports (their subtree
+ *  visibility is more useful through the full board than "my court"). */
+export function hasOrgNav(p: Person, all: Person[]): boolean {
+  return isOverseer(p) || hasGlobalView(p) || hasReports(p, all);
+}
 
 /** Team currently holding the ball. */
 export function ownerTeam(p: Project): TeamId {
@@ -88,27 +102,30 @@ export function orgSubtreeIds(me: Person, all: Person[]): Set<string> {
   return out;
 }
 
-/** SVP visibility: a project is visible if any person-reference on it — owner,
- *  business owner, tech lead, product SPOC, or any subtask assignee — falls in
- *  the SVP's subtree. Mirrors the DB's p_sel SVP branch exactly. Deliberately
- *  its own axis, not team-based: an SVP's own `team` is incidental to them
- *  being read-only leadership, not a court they hold. */
-export function svpVisibleTo(proj: Project, subtree: Set<string>): boolean {
+/** Org-hierarchy visibility: a project is visible if any person-reference on
+ *  it — owner, business owner, tech lead, product SPOC, or any subtask
+ *  assignee — falls in the subtree. Mirrors the DB's p_sel exactly. Applied
+ *  additively on top of visibleTo() for everyone (see App.tsx's `base`), not
+ *  gated by role or tier — for someone with no reports the subtree is just
+ *  themself, which visibleTo already covers, so this only ever *adds*
+ *  visibility for people who genuinely have descendants. */
+export function subtreeVisibleTo(proj: Project, subtree: Set<string>): boolean {
   if ([proj.ownerId, proj.businessOwnerId, proj.techLeadId, proj.productSpocId].some((id) => id && subtree.has(id))) return true;
   return proj.subtasks.some((s) => s.assigneeId && subtree.has(s.assigneeId));
 }
 
 /** Navigation is role-specific — contributors and overseers get different apps.
- *  Everyone gets a dashboard + all-projects table; overseers (and SVPs, within
- *  their branch) also get the board and escalations list. */
-export function navFor(me: Person): ViewKey[] {
-  return hasOrgNav(me)
+ *  Everyone gets a dashboard + all-projects table; overseers, global-view
+ *  grantees, and anyone with org-hierarchy reports also get the board and
+ *  escalations list. */
+export function navFor(me: Person, all: Person[]): ViewKey[] {
+  return hasOrgNav(me, all)
     ? ["overview", "board", "list", "escalations"]
     : ["overview", "queue", "team", "list"];
 }
 
-export function homeView(me: Person): ViewKey {
-  return hasOrgNav(me) ? "overview" : "queue";
+export function homeView(me: Person, all: Person[]): ViewKey {
+  return hasOrgNav(me, all) ? "overview" : "queue";
 }
 
 /** An open (unresolved) leadership/PMO note pins a project to the top of attention. */

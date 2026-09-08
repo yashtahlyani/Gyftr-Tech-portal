@@ -9,7 +9,7 @@ import { isCloud, daysBetween, overdueInfo } from "./lib";
 import { PEOPLE, PEOPLE_BY_ID } from "./people";
 import { useCloudAuth, signOutCloud } from "./auth";
 import { TEAMS, STAGE_BY_ID, aging } from "./workflow";
-import { can, isMine, isOverseer, isReadOnly, homeView, navFor, visibleProjects, visibleTo, openLeadershipNote, orgSubtreeIds, svpVisibleTo } from "./roles";
+import { can, isMine, isReadOnly, hasGlobalView, homeView, navFor, visibleTo, openLeadershipNote, orgSubtreeIds, subtreeVisibleTo } from "./roles";
 import { Avatar } from "./ui";
 import { GyftrLogo } from "./GyftrLogo";
 import { Login } from "./views/Login";
@@ -53,7 +53,7 @@ export default function App() {
 
   const [view, setView] = useState<ViewKey>(() => {
     const id = localStorage.getItem("gtp_me");
-    return id && PEOPLE_BY_ID[id] ? homeView(PEOPLE_BY_ID[id]) : "queue";
+    return id && PEOPLE_BY_ID[id] ? homeView(PEOPLE_BY_ID[id], PEOPLE) : "queue";
   });
   const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -72,7 +72,7 @@ export default function App() {
     setOpenId(null);
     setCreating(false);
     setFilters(EMPTY_FILTERS);
-    if (me) setView(homeView(me));
+    if (me) setView(homeView(me, PEOPLE));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me?.id]);
 
@@ -92,24 +92,25 @@ export default function App() {
       if (cloudAuth.status === "loading") return <CloudLoginLoading />;
       return <CloudLogin />;
     }
-    return <Login onPick={(id) => { setMeId(id); localStorage.setItem("gtp_me", id); setView(homeView(PEOPLE_BY_ID[id])); }} />;
+    return <Login onPick={(id) => { setMeId(id); localStorage.setItem("gtp_me", id); setView(homeView(PEOPLE_BY_ID[id], PEOPLE)); }} />;
   }
 
-  const nav = navFor(me);
-  const active = nav.includes(view) ? view : homeView(me);
+  const nav = navFor(me, PEOPLE);
+  const active = nav.includes(view) ? view : homeView(me, PEOPLE);
   const m = META[active];
   const openCandidate = openId ? projects.find((p) => p.id === openId) : null;
-  const canOpen = (p: Project) => isOverseer(me) || (me.role === "svp" ? svpVisibleTo(p, orgSubtreeIds(me, PEOPLE)) : visibleTo(me, p));
+  const canOpen = (p: Project) => hasGlobalView(me) || visibleTo(me, p) || subtreeVisibleTo(p, orgSubtreeIds(me, PEOPLE));
   const open = openCandidate && canOpen(openCandidate) ? openCandidate : null;  // RLS guard: never open what you can't see
   const showFilters = active === "board" || active === "list" || active === "team";
 
-  // base data set per view (role scoping happens HERE) — overseers see the whole
-  // portfolio; SVPs see their reporting subtree's slice (enforced server-side too,
-  // this is just the matching UI scope — see roles.ts's orgSubtreeIds/svpVisibleTo);
-  // everyone else works from their involvement-scoped slice.
-  const base = isOverseer(me) ? projects
-    : me.role === "svp" ? projects.filter((p) => svpVisibleTo(p, orgSubtreeIds(me, PEOPLE)))
-    : visibleProjects(me, projects);
+  // base data set per view (role scoping happens HERE, enforced server-side
+  // too — this is just the matching UI scope): overseers and global-view
+  // grantees see the whole portfolio; everyone else sees their normal
+  // involvement-scoped slice PLUS their org-hierarchy subtree, if they have
+  // one (a leaf with no reports just gets their own slice back — additive,
+  // never narrower — see roles.ts's orgSubtreeIds/subtreeVisibleTo).
+  const base = hasGlobalView(me) ? projects
+    : projects.filter((p) => visibleTo(me, p) || subtreeVisibleTo(p, orgSubtreeIds(me, PEOPLE)));
   const filtered = applyFilters(base, filters);
   const escCount = base.filter(escalationOf).length;
 
@@ -188,7 +189,7 @@ export default function App() {
             <div className="content">
               {active === "queue" && <MyQueue projects={projects} me={me} onOpen={setOpenId} />}
               {active === "team" && <Board projects={filtered} me={me} onOpen={setOpenId} />}
-              {active === "overview" && <Dashboard projects={isOverseer(me) ? projects : base} me={me} onOpen={setOpenId} />}
+              {active === "overview" && <Dashboard projects={base} me={me} onOpen={setOpenId} />}
               {active === "board" && <Board projects={filtered} me={me} onOpen={setOpenId} />}
               {active === "list" && <TableView projects={filtered} onOpen={setOpenId} />}
               {active === "escalations" && <Escalations projects={base} onOpen={setOpenId} />}

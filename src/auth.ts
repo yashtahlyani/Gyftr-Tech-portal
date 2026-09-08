@@ -9,17 +9,20 @@ import { supabase, isCloud } from "./lib";
 import { loadPeople } from "./people";
 import type { Person } from "./types";
 
-const ALLOWED_DOMAIN = "gyftr.net";
+// .com is a real, intentional second domain for part of the org (the
+// Senior/Junior/Sub Junior hierarchy roster), not a typo — both are valid.
+const ALLOWED_DOMAINS = ["gyftr.net", "gyftr.com"];
 const DEMO_PASSWORD = "GyftrTech@2026";
 
 export function isAllowedEmail(email: string): boolean {
-  return email.trim().toLowerCase().endsWith(`@${ALLOWED_DOMAIN}`);
+  const lower = email.trim().toLowerCase();
+  return ALLOWED_DOMAINS.some((d) => lower.endsWith(`@${d}`));
 }
 
 /** Sign in (or switch) to a profile by email — one click, no password prompt. */
 export async function switchProfile(email: string): Promise<{ ok: boolean; error?: string }> {
   if (!supabase) return { ok: false, error: "Cloud mode is off." };
-  if (!isAllowedEmail(email)) return { ok: false, error: `Use your @${ALLOWED_DOMAIN} email address.` };
+  if (!isAllowedEmail(email)) return { ok: false, error: `Use your @${ALLOWED_DOMAINS.join(" or @")} email address.` };
   await supabase.auth.signOut();
   const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password: DEMO_PASSWORD });
   return error ? { ok: false, error: error.message } : { ok: true };

@@ -25,6 +25,10 @@ export interface Person {
   /** Real-world department/function (E-Pay, Infra, Testing, etc.) — purely
    *  descriptive, shown in the UI. NOT used for authorization; that's `team`. */
   department?: string;
+  /** Explicit, named "sees every project" grant — data-driven (a DB column),
+   *  not a hierarchy derivation. Visibility only; doesn't imply write access
+   *  the way PMO/leadership's overseer status does. */
+  seesAllProjects?: boolean;
 }
 
 /** Pipeline lane a project sits in (drives the board columns + who owns the ball). */

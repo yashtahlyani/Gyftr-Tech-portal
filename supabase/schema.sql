@@ -21,13 +21,19 @@ create table people (
   email       text unique not null,
   team        team_id not null,
   role        role_id not null default 'member',
-  -- Org reporting chain — null for people outside the Tech hierarchy
-  -- (Business/Leadership/Partner) and for the CTO (root of the tree).
-  -- Drives SVP-level project visibility (my_subtree_ids() below).
+  -- Org reporting chain — self-referencing, any depth (Senior/Junior/Sub
+  -- Junior, or whatever tier labels a given roster uses). Null for anyone
+  -- who isn't part of a managed hierarchy, and for anyone at the root of
+  -- one. Drives subtree-based project visibility (my_subtree_ids() below) —
+  -- applied structurally, not gated by role/title.
   manager_id  uuid references people(id),
   -- Real-world department/function (E-Pay, Infra, Testing, etc.) — purely
   -- descriptive, shown in the UI. NOT used for authorization; that's `team`.
-  department  text
+  department  text,
+  -- Explicit, named "sees every project" grant — data-driven, not a
+  -- hierarchy derivation. Visibility only; doesn't imply write access the
+  -- way is_overseer()'s pmo/leadership does.
+  sees_all_projects boolean not null default false
 );
 
 -- ── Identity helpers (SECURITY DEFINER so RLS policies can call them) ──
@@ -69,8 +75,17 @@ create or replace function my_subtree_ids() returns uuid[] language sql stable s
   )
   select coalesce(array_agg(id), '{}') from sub;
 $$;
+-- Legacy/dormant: an earlier design gated subtree visibility on role='svp'.
+-- The current model applies my_subtree_ids() structurally to everyone
+-- instead (see p_sel/can_see below), so nothing calls this anymore — kept
+-- only because the 'svp' enum value and any future person using it should
+-- still resolve correctly, not because anything currently depends on it.
 create or replace function is_svp() returns boolean language sql stable security definer as $$
   select coalesce(my_role() = 'svp', false);
+$$;
+-- Explicit, named "sees every project" grant — mirrors people.sees_all_projects.
+create or replace function sees_all_projects() returns boolean language sql stable security definer as $$
+  select coalesce((select p.sees_all_projects from people p where p.auth_id = auth.uid()), false);
 $$;
 
 create sequence projects_code_seq;
@@ -199,17 +214,16 @@ create table attachments (
   by_id uuid references people(id), at timestamptz not null default now()
 );
 
--- Can the current user SEE this project? (their team is involved, they oversee,
--- or — for an SVP — any person-reference on the project falls in their subtree)
+-- Can the current user SEE this project? Overseer, global-view grant, team
+-- involved, or — structurally, for anyone with reports (any depth, any
+-- tier) — any person-reference on the project falls in their subtree.
 create or replace function can_see(pid uuid) returns boolean language sql stable security definer as $$
-  select is_overseer() or exists (
+  select is_overseer() or sees_all_projects() or exists (
     select 1 from projects p where p.id = pid and (
       my_team() = any(p.involved_teams)
-      or (is_svp() and (
-        p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
-        or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
-        or exists (select 1 from subtasks st where st.project_id = p.id and st.assignee_id = any(my_subtree_ids()))
-      ))
+      or p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
+      or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
+      or exists (select 1 from subtasks st where st.project_id = p.id and st.assignee_id = any(my_subtree_ids()))
     )
   );
 $$;
@@ -242,18 +256,18 @@ alter table stage_targets enable row level security;
 -- renegotiate go-live dates with a partner without waiting on whichever team holds the
 -- ball — RLS only decides row reachability here; enforce_project_update_scope() below
 -- is what actually restricts them to touching just the date columns.
--- SVP branch mirrors can_see()'s: visible if any person-reference on the
--- project (owner, business owner, tech lead, product SPOC, or any subtask
--- assignee) falls in the SVP's reporting subtree. Enforced here, not just in
--- the UI (roles.ts's svpVisibleTo is the client-side mirror for the same UX).
+-- Mirrors can_see()'s logic exactly for the direct-select case: overseer,
+-- global-view grant, team involved, or — structurally, for anyone with
+-- reports — any person-reference on the project falls in their subtree.
+-- Enforced here, not just in the UI (roles.ts's subtreeVisibleTo is the
+-- client-side mirror, applied additively for the same UX).
 create policy p_sel on projects for select using (
   is_overseer()
+  or sees_all_projects()
   or my_team() = any(involved_teams)
-  or (is_svp() and (
-    owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
-    or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
-    or exists (select 1 from subtasks st where st.project_id = projects.id and st.assignee_id = any(my_subtree_ids()))
-  ))
+  or owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
+  or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
+  or exists (select 1 from subtasks st where st.project_id = projects.id and st.assignee_id = any(my_subtree_ids()))
 );
 create policy p_ins on projects for insert with check ( is_pmo() or my_team() in ('business','product','tech_spoc') );
 -- Last USING branch: "any team except Business, already involved" may reach
