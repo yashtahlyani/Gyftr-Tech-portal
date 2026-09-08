@@ -1,10 +1,10 @@
-import { useState } from "react";
-import { ChevronRight, ShieldAlert, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronRight, ShieldAlert, Loader2, Search } from "lucide-react";
 import { GyftrLogo } from "../GyftrLogo";
-import { PEOPLE as SEED_PEOPLE } from "../seed";
 import { TEAMS } from "../workflow";
-import { initials, colorFor } from "../lib";
+import { initials, colorFor, supabase } from "../lib";
 import { switchProfile, signOutCloud } from "../auth";
+import type { Person } from "../types";
 
 /** Name-keyed avatar, not id-keyed — the live people directory isn't loaded
    yet at this point (it only loads post-auth), so PEOPLE_BY_ID is empty. */
@@ -53,11 +53,34 @@ export function CloudNoAccess({ email }: { email: string }) {
   );
 }
 
+type DirectoryRow = Pick<Person, "id" | "name" | "email" | "team" | "role">;
+
 /** Demo profile picker — real Supabase session under the hood (one shared
-   demo password), so switching "who I am" is a single click. */
+   demo password), so switching "who I am" is a single click. Reads the live
+   org directory (active people only) via active_people_directory(), a
+   narrow SECURITY DEFINER RPC — the people table itself requires an
+   authenticated session to read, and nobody is signed in yet at this point. */
 export function CloudLogin() {
+  const [people, setPeople] = useState<DirectoryRow[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.rpc("active_people_directory").then(({ data, error }) => {
+      if (error) { setLoadError(error.message); return; }
+      setPeople((data ?? []) as DirectoryRow[]);
+    });
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!people) return [];
+    const q = query.trim().toLowerCase();
+    if (!q) return people;
+    return people.filter((p) => p.name.toLowerCase().includes(q) || TEAMS[p.team].label.toLowerCase().includes(q));
+  }, [people, query]);
 
   const pick = async (email: string) => {
     setError(null);
@@ -69,11 +92,26 @@ export function CloudLogin() {
 
   return (
     <Shell>
-      <p style={{ fontSize: 12.5, color: "var(--ink-mute)", margin: "3px 0 18px" }}>
+      <p style={{ fontSize: 12.5, color: "var(--ink-mute)", margin: "3px 0 14px" }}>
         Project flow · one source of truth. Pick who you are — every action is logged against you.
       </p>
+      {people && people.length > 8 && (
+        <div style={{ position: "relative", marginBottom: 10 }}>
+          <Search size={14} color="var(--ink-mute)" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
+          <input
+            className="input" placeholder="Search by name or team…" value={query}
+            onChange={(e) => setQuery(e.target.value)} style={{ paddingLeft: 30, width: "100%" }}
+          />
+        </div>
+      )}
+      {loadError && <div style={{ fontSize: 12, color: "var(--rose-fg)", marginBottom: 10 }}>Couldn't load the directory: {loadError}</div>}
+      {!people && !loadError && (
+        <div style={{ display: "flex", alignItems: "center", gap: 9, color: "var(--ink-mute)", fontSize: 13 }}>
+          <Loader2 size={16} className="spin" /> Loading directory…
+        </div>
+      )}
       <div className="user-pick-list">
-        {SEED_PEOPLE.map((p) => (
+        {filtered.map((p) => (
           <button key={p.id} className="user-pick" disabled={!!pending} onClick={() => pick(p.email)}>
             <NameAvatar name={p.name} />
             <div style={{ flex: 1 }}>
@@ -83,6 +121,9 @@ export function CloudLogin() {
             {pending === p.email ? <Loader2 size={16} className="spin" color="var(--ink-mute)" /> : <ChevronRight size={16} color="var(--ink-mute)" />}
           </button>
         ))}
+        {people && people.length > 0 && filtered.length === 0 && (
+          <div style={{ fontSize: 12.5, color: "var(--ink-mute)", padding: "10px 0" }}>No one matches "{query}".</div>
+        )}
       </div>
       {error && <div style={{ fontSize: 12, color: "var(--rose-fg)", marginTop: 10 }}>{error}</div>}
     </Shell>

@@ -592,6 +592,18 @@ alter publication supabase_realtime add table projects, subtasks, stage_history,
 alter table people enable row level security;
 create policy people_sel on people for select using ( auth.role() = 'authenticated' );
 
+-- Narrow, unauthenticated read for the pre-login "pick who you are" screen
+-- (CloudLogin.tsx) — people_sel above correctly requires an authenticated
+-- session for the real table, but nobody is signed in yet on that screen.
+-- SECURITY DEFINER + granted to anon so it can run before auth, deliberately
+-- limited to only the columns/rows (active people) that screen needs.
+create or replace function public.active_people_directory()
+returns table(id uuid, name text, email text, team team_id, role role_id)
+language sql stable security definer as $$
+  select id, name, email, team, role from people where active order by name;
+$$;
+grant execute on function public.active_people_directory() to anon, authenticated;
+
 create or replace function claim_person() returns people language plpgsql security definer as $$
 declare rec people;
 begin
