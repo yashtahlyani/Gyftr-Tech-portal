@@ -131,9 +131,13 @@ create or replace function can_dispatch_pickup() returns boolean language sql st
   );
 $$;
 -- True where the old blanket "my team holds court" visibility/action rule
--- would leak across hierarchy branches — specifically the 3 team_id values
--- (development/qa/design) that coarsely cram ~15 real Tech departments into
--- one workflow court. Product/Business/Tech-SPOC courts map 1:1 to real
+-- would leak across hierarchy branches — the team_id values (development/
+-- qa/design/business) that coarsely cram many real departments/branches
+-- into one workflow court. business joined this set once the Business
+-- hierarchy (Kavish/Neha/Anjali Gupta/Khushboo Nagpal/Gautam Mehra) moved
+-- onto team='business' so they could actually create projects (p_ins/
+-- can()'s "create" branch requires it) — the same coarseness problem the
+-- Tech hierarchy hit, same fix. Product/Tech-SPOC courts map 1:1 to real
 -- departments and never hit this, even for people who happen to carry a
 -- manager_id (e.g. Anandita, a Product lead who also appears in the Tech org
 -- chart) — gating on team, not merely "is in a hierarchy", avoids stripping
@@ -142,7 +146,7 @@ $$;
 -- person could see every other branch's in-court work purely because they
 -- all share team='development'/'qa'/'design' — see git history.
 create or replace function has_coarse_team_leak() returns boolean language sql stable security definer as $$
-  select coalesce(my_team() in ('development','qa','design'), false) and is_hierarchy_person();
+  select coalesce(my_team() in ('development','qa','design','business'), false) and is_hierarchy_person();
 $$;
 
 -- Explicit, named "sees every project" grant — mirrors people.sees_all_projects.
@@ -276,18 +280,26 @@ create table attachments (
   by_id uuid references people(id), at timestamptz not null default now()
 );
 
--- Shared by can_see/can_act/p_sel/p_upd (hold branch, and its WITH CHECK)
--- wherever a coarse-team-leak actor needs "does my own subtree connect to
--- this project at all" — every person-reference (owner/business_owner/
--- tech_lead/product_spoc) OR a subtask assignee. One definition instead of
--- duplicating this OR-chain at every call site keeps them from drifting
--- apart (they did — see git history: can_act()'s inline copy omitted the
--- subtask-assignee case that can_see()'s already had, so a coarse-team-leak
--- actor connected to a project only via a subtask could see it but not
--- attach a file to it). NOT used by p_upd's/enforce_project_update_scope's
--- full-edit branch or h_ins — those need the narrower subtree_leads()
--- below, since a subtask is too light a connection to justify editing
--- every column.
+-- Shared by can_act/p_upd (hold branch, and its WITH CHECK)/
+-- enforce_project_update_scope's hold branch wherever a coarse-team-leak
+-- actor needs "does my own subtree connect to this project at all" — every
+-- person-reference (owner/business_owner/tech_lead/product_spoc) OR a
+-- subtask assignee. One definition instead of duplicating this OR-chain at
+-- every call site keeps them from drifting apart (they did — see git
+-- history: can_act()'s inline copy omitted the subtask-assignee case that
+-- can_see()'s already had, so a coarse-team-leak actor connected to a
+-- project only via a subtask could see it but not attach a file to it).
+--
+-- NOT used by p_sel, despite needing the exact same OR-chain — p_sel has
+-- its own inline copy instead (see the comment there) to dodge a Postgres/
+-- PostgREST self-referencing-subquery quirk on INSERT ... RETURNING. If you
+-- change this function's shape (add/remove a reference column, change the
+-- subtask check), update p_sel's inline copy too — it WILL drift silently
+-- otherwise, the same way can_act()'s copy already did once.
+--
+-- NOT used by p_upd's/enforce_project_update_scope's full-edit branch or
+-- h_ins either — those need the narrower subtree_leads() below, since a
+-- subtask is too light a connection to justify editing every column.
 create or replace function subtree_owns(pid uuid) returns boolean language sql stable security definer as $$
   select exists (
     select 1 from projects p where p.id = pid and (
@@ -378,12 +390,29 @@ alter table stage_targets enable row level security;
 -- function's comment); the to_be_picked branch instead gives a manager
 -- visibility of their own reports' pickup queue — "manager assigns, no
 -- self-serve pickup" for Tech-hierarchy people specifically.
+--
+-- The last 5 lines are subtree_owns()'s definition INLINED, not a call to
+-- subtree_owns(id) — deliberately. Postgres has a real, reproducible quirk
+-- where a self-referencing subquery back into the SAME table (exactly what
+-- subtree_owns(pid) does: `select ... from projects where id = pid`) can
+-- fail to see a row that was inserted earlier in the SAME statement, when
+-- that policy is evaluated for INSERT ... RETURNING specifically (UPDATE ...
+-- RETURNING is unaffected — verified live both ways). A direct column
+-- reference on the row already being evaluated (no subquery, no self-join)
+-- doesn't hit this. Caught live: a Business-hierarchy person (now
+-- has_coarse_team_leak() after moving to team='business' so they could
+-- create projects at all) got a 403 creating their own project — the INSERT
+-- itself succeeded, but PostgREST's implicit RETURNING select-back failed.
+-- Same reason my_team()=any(involved_teams) above is a direct column check,
+-- not a function call — see this file's older comment on that.
 create policy p_sel on projects for select using (
   is_overseer()
   or sees_all_projects()
   or (my_team() = any(involved_teams) and not has_coarse_team_leak())
   or (stage = 'to_be_picked' and can_dispatch_pickup())
-  or subtree_owns(id)
+  or owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
+  or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
+  or exists (select 1 from subtasks st where st.project_id = projects.id and st.assignee_id = any(my_subtree_ids()))
 );
 create policy p_ins on projects for insert with check ( is_pmo() or my_team() in ('business','product','tech_spoc') );
 -- Last USING branch: "any team except Business, already involved" may reach
@@ -496,7 +525,7 @@ begin
     or (my_team() = old.owner_team and not has_coarse_team_leak())
     or (old.stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
     or (old.stage = 'to_be_picked' and can_dispatch_pickup())
-    or (has_coarse_team_leak() and subtree_leads(old.id))
+    or (has_coarse_team_leak() and my_team() <> 'business' and subtree_leads(old.id))
   then
     return new;
   end if;
@@ -522,6 +551,24 @@ begin
       or new.sacrosanct_go_live is distinct from old.sacrosanct_go_live
     then
       raise exception 'Product leads may only edit go-live dates (Expected / Timeline ETA) outside their own court';
+    end if;
+    return new;
+  end if;
+  -- A business-hierarchy manager gets full control of their own branch's
+  -- work (subtree_leads), same as Tech-hierarchy managers, EXCEPT the hold
+  -- columns — "Mark as Hold" is explicitly "any team except Business"
+  -- (canHold() in roles.ts already enforces this client-side); without this
+  -- carve-out the branch above would silently let a Business-hierarchy
+  -- manager toggle hold on their own project via direct API, bypassing
+  -- that rule.
+  if has_coarse_team_leak() and my_team() = 'business' and subtree_leads(old.id) then
+    if new.on_hold is distinct from old.on_hold
+      or new.hold_reason is distinct from old.hold_reason
+      or new.held_by_id is distinct from old.held_by_id
+      or new.held_by_team is distinct from old.held_by_team
+      or new.held_at is distinct from old.held_at
+    then
+      raise exception 'Business may not change hold status';
     end if;
     return new;
   end if;

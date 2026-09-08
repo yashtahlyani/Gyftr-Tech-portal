@@ -24,16 +24,17 @@
 -- transcribed from a screenshot, worth a careful line-by-line check.
 -- ══════════════════════════════════════════════════════════════
 
--- ── New hierarchy. team='partner' for brand-new people: an inert court
--- team (no pipeline stage is owned by it, and it's otherwise unused across
--- every live project), so their visibility comes entirely from the
--- structural subtree rule (roles.ts's orgSubtreeIds / schema's
--- my_subtree_ids()), never accidentally from team-court matching.
--- CAUTION: if you ever assign a subtask with team='partner' for any reason
--- (including testing), remember involved_teams only ever grows — it will
--- stick to that project permanently and broaden every 'partner'-team
--- person's visibility into it. Verified live and hit exactly this during
--- development; see git history for the cleanup.
+-- ── New hierarchy. team='business' for brand-new people — not 'partner'
+-- (an earlier version of this script used the inert 'partner' team purely
+-- to sidestep cross-branch visibility leakage; that broke something more
+-- basic — nobody outside the 5 roots could even CREATE a project, since
+-- p_ins/can()'s "create" check requires team in business/product/tech_spoc).
+-- team='business' is correct here — it's their real function — and cross-
+-- branch isolation is instead handled by has_coarse_team_leak() including
+-- 'business' in its coarse set (see schema.sql), the same mechanism already
+-- built for the Tech hierarchy's development/qa/design courts. Their
+-- visibility/action rights are structural (subtree-based), never plain
+-- team-court matching, exactly like the Tech hierarchy.
 
 -- Two of the five "Senior" roots merge into existing accounts (same real
 -- people as the existing Business team, confirmed with the org).
@@ -41,63 +42,63 @@ update people set manager_id = null where email = 'neha@gyftr.net';         -- N
 update people set manager_id = null where email = 'anjali.gupta@gyftr.net'; -- Anjali Gupta
 
 insert into people (name, email, team, role, manager_id) values
-  ('Kavish', 'kavish@gyftr.com', 'partner', 'lead', null),
-  ('Khushboo Nagpal', 'khushboo.n@gyftr.com', 'partner', 'lead', null),
-  ('Gautam Mehra', 'gautam.m@gyftr.com', 'partner', 'lead', null)
+  ('Kavish', 'kavish@gyftr.com', 'business', 'lead', null),
+  ('Khushboo Nagpal', 'khushboo.n@gyftr.com', 'business', 'lead', null),
+  ('Gautam Mehra', 'gautam.m@gyftr.com', 'business', 'lead', null)
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 
 -- Kavish's branch
 insert into people (name, email, team, role, manager_id) values
-  ('Sidak', 'sidak@gyftr.com', 'partner', 'member', (select id from people where email='kavish@gyftr.com')),
-  ('Ritvik Sikka', 'ritvik.sikka@gyftr.com', 'partner', 'member', (select id from people where email='kavish@gyftr.com')),
-  ('Mohit Chauhan', 'mohit.c@gyftr.com', 'partner', 'lead', (select id from people where email='kavish@gyftr.com'))
+  ('Sidak', 'sidak@gyftr.com', 'business', 'member', (select id from people where email='kavish@gyftr.com')),
+  ('Ritvik Sikka', 'ritvik.sikka@gyftr.com', 'business', 'member', (select id from people where email='kavish@gyftr.com')),
+  ('Mohit Chauhan', 'mohit.c@gyftr.com', 'business', 'lead', (select id from people where email='kavish@gyftr.com'))
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 insert into people (name, email, team, role, manager_id) values
-  ('Riya Sinha', 'riya.s@gyftr.com', 'partner', 'member', (select id from people where email='mohit.c@gyftr.com')),
-  ('Harshita Kumar', 'harshita.k@gyftr.com', 'partner', 'member', (select id from people where email='mohit.c@gyftr.com')),
-  ('Nikita Pandey', 'nikita.pandey@gyftr.com', 'partner', 'member', (select id from people where email='mohit.c@gyftr.com'))
+  ('Riya Sinha', 'riya.s@gyftr.com', 'business', 'member', (select id from people where email='mohit.c@gyftr.com')),
+  ('Harshita Kumar', 'harshita.k@gyftr.com', 'business', 'member', (select id from people where email='mohit.c@gyftr.com')),
+  ('Nikita Pandey', 'nikita.pandey@gyftr.com', 'business', 'member', (select id from people where email='mohit.c@gyftr.com'))
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 
 -- Neha Sharma's branch
 insert into people (name, email, team, role, manager_id) values
-  ('Biren Pal Singh', 'biren.singh@gyftr.com', 'partner', 'member', (select id from people where email='neha@gyftr.net')),
-  ('Rajeev Magan', 'rajeev.m@gyftr.com', 'partner', 'member', (select id from people where email='neha@gyftr.net')),
-  ('Alisha Dutta', 'alisha.dutta@gyftr.com', 'partner', 'member', (select id from people where email='neha@gyftr.net'))
+  ('Biren Pal Singh', 'biren.singh@gyftr.com', 'business', 'member', (select id from people where email='neha@gyftr.net')),
+  ('Rajeev Magan', 'rajeev.m@gyftr.com', 'business', 'member', (select id from people where email='neha@gyftr.net')),
+  ('Alisha Dutta', 'alisha.dutta@gyftr.com', 'business', 'member', (select id from people where email='neha@gyftr.net'))
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 
 -- Anjali Gupta's branch
 insert into people (name, email, team, role, manager_id) values
-  ('Pratistha Rawat', 'pratishtha.r@gyftr.com', 'partner', 'lead', (select id from people where email='anjali.gupta@gyftr.net')),
-  ('Shradha Pratap Singh', 'shradha.s@gyftr.com', 'partner', 'lead', (select id from people where email='anjali.gupta@gyftr.net'))
+  ('Pratistha Rawat', 'pratishtha.r@gyftr.com', 'business', 'lead', (select id from people where email='anjali.gupta@gyftr.net')),
+  ('Shradha Pratap Singh', 'shradha.s@gyftr.com', 'business', 'lead', (select id from people where email='anjali.gupta@gyftr.net'))
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 insert into people (name, email, team, role, manager_id) values
-  ('Rohan Mathur', 'rohan.mathur@gyftr.com', 'partner', 'member', (select id from people where email='pratishtha.r@gyftr.com')),
-  ('Krish Chanana', 'krish.c@gyftr.com', 'partner', 'member', (select id from people where email='pratishtha.r@gyftr.com')),
-  ('Garima Titoria', 'garima.titoria@gyftr.com', 'partner', 'member', (select id from people where email='pratishtha.r@gyftr.com')),
-  ('Srishty Adlakha', 'srishty.a@gyftr.com', 'partner', 'member', (select id from people where email='shradha.s@gyftr.com')),
-  ('Karan Jha', 'karan.jha@gyftr.com', 'partner', 'member', (select id from people where email='shradha.s@gyftr.com')),
-  ('Simran', 'simran@gyftr.com', 'partner', 'member', (select id from people where email='shradha.s@gyftr.com'))
+  ('Rohan Mathur', 'rohan.mathur@gyftr.com', 'business', 'member', (select id from people where email='pratishtha.r@gyftr.com')),
+  ('Krish Chanana', 'krish.c@gyftr.com', 'business', 'member', (select id from people where email='pratishtha.r@gyftr.com')),
+  ('Garima Titoria', 'garima.titoria@gyftr.com', 'business', 'member', (select id from people where email='pratishtha.r@gyftr.com')),
+  ('Srishty Adlakha', 'srishty.a@gyftr.com', 'business', 'member', (select id from people where email='shradha.s@gyftr.com')),
+  ('Karan Jha', 'karan.jha@gyftr.com', 'business', 'member', (select id from people where email='shradha.s@gyftr.com')),
+  ('Simran', 'simran@gyftr.com', 'business', 'member', (select id from people where email='shradha.s@gyftr.com'))
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 
 -- Khushboo Nagpal's branch ("New member" row skipped — no email given)
 insert into people (name, email, team, role, manager_id) values
-  ('Rewa Kauseeka', 'rewa.k@gyftr.com', 'partner', 'member', (select id from people where email='khushboo.n@gyftr.com')),
-  ('Plaban Roy', 'plaban.r@gyftr.com', 'partner', 'member', (select id from people where email='khushboo.n@gyftr.com')),
-  ('Geetanjali Narula', 'geetanjali.n@gyftr.com', 'partner', 'member', (select id from people where email='khushboo.n@gyftr.com')),
-  ('Ashutosh Kumar', 'ashutosh.k@gyftr.com', 'partner', 'member', (select id from people where email='khushboo.n@gyftr.com'))
+  ('Rewa Kauseeka', 'rewa.k@gyftr.com', 'business', 'member', (select id from people where email='khushboo.n@gyftr.com')),
+  ('Plaban Roy', 'plaban.r@gyftr.com', 'business', 'member', (select id from people where email='khushboo.n@gyftr.com')),
+  ('Geetanjali Narula', 'geetanjali.n@gyftr.com', 'business', 'member', (select id from people where email='khushboo.n@gyftr.com')),
+  ('Ashutosh Kumar', 'ashutosh.k@gyftr.com', 'business', 'member', (select id from people where email='khushboo.n@gyftr.com'))
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 
 -- Gautam Mehra's branch
 insert into people (name, email, team, role, manager_id) values
-  ('Rohit Kothiyal', 'rohit.k@gyftr.com', 'partner', 'lead', (select id from people where email='gautam.m@gyftr.com')),
-  ('Shubhranil Chowdhary', 'shubhranil.c@gyftr.com', 'partner', 'member', (select id from people where email='gautam.m@gyftr.com')),
-  ('Minal Bhutani', 'minal.b@gyftr.com', 'partner', 'member', (select id from people where email='gautam.m@gyftr.com')),
-  ('Rishiraj Singh Shekhawat', 'rishiraj.shekhawat@gyftr.com', 'partner', 'member', (select id from people where email='gautam.m@gyftr.com')),
-  ('Riya Ohri', 'riya.ohri@gyftr.com', 'partner', 'member', (select id from people where email='gautam.m@gyftr.com')),
-  ('Aditya Joshi', 'aditya.joshi@gyftr.com', 'partner', 'member', (select id from people where email='gautam.m@gyftr.com'))
+  ('Rohit Kothiyal', 'rohit.k@gyftr.com', 'business', 'lead', (select id from people where email='gautam.m@gyftr.com')),
+  ('Shubhranil Chowdhary', 'shubhranil.c@gyftr.com', 'business', 'member', (select id from people where email='gautam.m@gyftr.com')),
+  ('Minal Bhutani', 'minal.b@gyftr.com', 'business', 'member', (select id from people where email='gautam.m@gyftr.com')),
+  ('Rishiraj Singh Shekhawat', 'rishiraj.shekhawat@gyftr.com', 'business', 'member', (select id from people where email='gautam.m@gyftr.com')),
+  ('Riya Ohri', 'riya.ohri@gyftr.com', 'business', 'member', (select id from people where email='gautam.m@gyftr.com')),
+  ('Aditya Joshi', 'aditya.joshi@gyftr.com', 'business', 'member', (select id from people where email='gautam.m@gyftr.com'))
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 insert into people (name, email, team, role, manager_id) values
-  ('Akash Shukla', 'akash.shukla@gyftr.com', 'partner', 'member', (select id from people where email='rohit.k@gyftr.com'))
+  ('Akash Shukla', 'akash.shukla@gyftr.com', 'business', 'member', (select id from people where email='rohit.k@gyftr.com'))
 on conflict (email) do update set team=excluded.team, role=excluded.role, manager_id=excluded.manager_id;
 
 -- ── The five Product people who see every project (explicit named grant,

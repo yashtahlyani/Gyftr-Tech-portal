@@ -32,16 +32,20 @@ export function isHierarchyPerson(me: Person, all: Person[]): boolean {
  *  work to a specific report, rather than everyone on the team self-serving. */
 export const isManager = hasReports;
 /** True where the old blanket "my team holds court" visibility/action rule
- *  would leak across hierarchy branches — specifically the 3 team_id values
- *  (development/qa/design) that coarsely cram ~15 real Tech departments into
- *  one workflow court. Product/Business/Tech-SPOC courts map 1:1 to real
+ *  would leak across hierarchy branches — the team_id values (development/
+ *  qa/design/business) that coarsely cram many real departments/branches
+ *  into one workflow court. business joined this set once the Business
+ *  hierarchy (Kavish/Neha/Anjali Gupta/Khushboo Nagpal/Gautam Mehra) moved
+ *  onto team='business' so they could actually create projects (can()'s
+ *  "create" branch requires it) — the same coarseness problem the Tech
+ *  hierarchy hit, same fix. Product/Tech-SPOC courts map 1:1 to real
  *  departments and never hit this, even for people who happen to carry a
  *  manager_id (e.g. Anandita, a Product lead who also appears in the Tech
  *  org chart) — gating on team, not merely "is in a hierarchy", avoids
  *  stripping their normal team-court visibility. Mirrors the DB's
  *  has_coarse_team_leak() exactly. */
 export function hasCoarseTeamLeak(me: Person, all: Person[]): boolean {
-  return (me.team === "development" || me.team === "qa" || me.team === "design") && isHierarchyPerson(me, all);
+  return (me.team === "development" || me.team === "qa" || me.team === "design" || me.team === "business") && isHierarchyPerson(me, all);
 }
 /** Board/list/escalations/overview nav (vs. queue/team) — overseers, anyone
  *  with a global-view grant, and anyone who has real reports (their subtree
