@@ -1,16 +1,15 @@
 -- ══════════════════════════════════════════════════════════════
--- Tech org hierarchy seed (2026-09-08), Senior -> Junior -> Sub Junior,
+-- Business org hierarchy seed (2026-09-08), Senior -> Junior -> Sub Junior,
 -- transcribed from the org's own spreadsheet.
 --
--- This REPLACES an earlier hierarchy import (SVP/AVP/TL, transcribed from
--- a different Excel on 2026-09-07) — that whole roster is retired below,
--- not deleted (their rows stay for FK/history integrity — old projects
--- still resolve their name — just active=false, so they can't log in and
--- never appear in any assignment/owner picker). Two people are carried
--- over as merges, not new rows: Anandita
--- and Pooja were existing accounts touched by the retired import; this
--- script reverts their hierarchy fields (they're not in the new roster
--- either) while leaving their team/role exactly as already decided.
+-- Coexists with, does NOT replace, the separate Tech hierarchy (Rajneesh
+-- Gupta CTO -> Kalyan Singh/Abhishek Sharma/Ashish Aggarwal/Gautam Kumar,
+-- ~60 people — see tech-hierarchy-reactivate.sql). An earlier pass through
+-- this session briefly (and incorrectly) retired the Tech hierarchy under
+-- the assumption this roster replaced it; that was wrong and has been
+-- reversed — the two are independent branches under two different roots,
+-- both real, both active. Kept here as a correction note so the mistake
+-- isn't repeated.
 --
 -- Idempotent: every insert is `on conflict (email) do update`, safe to
 -- re-run. Ordered top-down (managers before their reports) so each
@@ -24,19 +23,6 @@
 -- REVIEW THIS AGAINST THE SOURCE SPREADSHEET BEFORE RE-RUNNING — hand
 -- transcribed from a screenshot, worth a careful line-by-line check.
 -- ══════════════════════════════════════════════════════════════
-
--- ── Retire the previous (2026-09-07) hierarchy import ──
-with recursive old_tree as (
-  select id from people where email in
-    ('abhishek.sharma@gyftr.net','ashish.aggarwal@gyftr.net','gautam.kumar@gyftr.net','kalyan.singh@gyftr.net')
-  union all
-  select p.id from people p join old_tree t on p.manager_id = t.id
-)
-update people set auth_id = null, active = false
- where id in (select id from old_tree)
-   and email not in ('anandita@gyftr.net', 'pooja@gyftr.net');
-
-update people set manager_id = null, department = null where email in ('anandita@gyftr.net', 'pooja@gyftr.net');
 
 -- ── New hierarchy. team='partner' for brand-new people: an inert court
 -- team (no pipeline stage is owned by it, and it's otherwise unused across
