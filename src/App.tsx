@@ -3,13 +3,13 @@ import {
   LayoutDashboard, KanbanSquare, Table2, AlertOctagon, Inbox, Users,
   Plus, LogOut, RotateCcw, Cloud, HardDrive, Eye, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
-import type { Person, ViewKey } from "./types";
+import type { Person, Project, ViewKey } from "./types";
 import { useProjects, resetDemo } from "./store";
 import { isCloud, daysBetween, overdueInfo } from "./lib";
-import { PEOPLE_BY_ID } from "./people";
+import { PEOPLE, PEOPLE_BY_ID } from "./people";
 import { useCloudAuth, signOutCloud } from "./auth";
 import { TEAMS, STAGE_BY_ID, aging } from "./workflow";
-import { can, isMine, isOverseer, isReadOnly, homeView, navFor, visibleProjects, visibleTo, openLeadershipNote } from "./roles";
+import { can, isMine, isOverseer, isReadOnly, homeView, navFor, visibleProjects, visibleTo, openLeadershipNote, orgSubtreeIds, svpVisibleTo } from "./roles";
 import { Avatar } from "./ui";
 import { GyftrLogo } from "./GyftrLogo";
 import { Login } from "./views/Login";
@@ -82,9 +82,9 @@ export default function App() {
   const myProjectCount = useMemo(() => (me ? projects.filter((p) => isMine(me, p)).length : 0), [projects, me]);
   const mySubCount = useMemo(() => (me ? projects.flatMap((p) => p.subtasks.filter((s) => s.assigneeId === me.id && !s.done)).length : 0), [projects, me]);
   const myCount = myProjectCount + mySubCount;
-  const escCount = useMemo(() => projects.filter((p) =>
+  const escalationOf = (p: Project) =>
     p.stage !== "live" && (openLeadershipNote(p) || p.blocked || overdueInfo(p.sacrosanctGoLive, p.targetGoLive, false).overdue ||
-      aging(daysBetween(p.stageEnteredAt), STAGE_BY_ID[p.stage].slaDays) === "breach")).length, [projects]);
+      aging(daysBetween(p.stageEnteredAt), STAGE_BY_ID[p.stage].slaDays) === "breach");
 
   if (!me) {
     if (isCloud) {
@@ -99,13 +99,19 @@ export default function App() {
   const active = nav.includes(view) ? view : homeView(me);
   const m = META[active];
   const openCandidate = openId ? projects.find((p) => p.id === openId) : null;
-  const open = openCandidate && visibleTo(me, openCandidate) ? openCandidate : null;  // RLS guard: never open what you can't see
+  const canOpen = (p: Project) => isOverseer(me) || (me.role === "svp" ? svpVisibleTo(p, orgSubtreeIds(me, PEOPLE)) : visibleTo(me, p));
+  const open = openCandidate && canOpen(openCandidate) ? openCandidate : null;  // RLS guard: never open what you can't see
   const showFilters = active === "board" || active === "list" || active === "team";
 
   // base data set per view (role scoping happens HERE) — overseers see the whole
-  // portfolio; contributors always work from their involvement-scoped slice.
-  const base = isOverseer(me) ? projects : visibleProjects(me, projects);
+  // portfolio; SVPs see their reporting subtree's slice (enforced server-side too,
+  // this is just the matching UI scope — see roles.ts's orgSubtreeIds/svpVisibleTo);
+  // everyone else works from their involvement-scoped slice.
+  const base = isOverseer(me) ? projects
+    : me.role === "svp" ? projects.filter((p) => svpVisibleTo(p, orgSubtreeIds(me, PEOPLE)))
+    : visibleProjects(me, projects);
   const filtered = applyFilters(base, filters);
+  const escCount = base.filter(escalationOf).length;
 
   const badge = (k: ViewKey) => (k === "queue" ? myCount : k === "escalations" ? escCount : 0);
   const myFlagged = me ? projects.some((p) => isMine(me, p) && openLeadershipNote(p)) : false;
@@ -185,7 +191,7 @@ export default function App() {
               {active === "overview" && <Dashboard projects={isOverseer(me) ? projects : base} me={me} onOpen={setOpenId} />}
               {active === "board" && <Board projects={filtered} me={me} onOpen={setOpenId} />}
               {active === "list" && <TableView projects={filtered} onOpen={setOpenId} />}
-              {active === "escalations" && <Escalations projects={projects} onOpen={setOpenId} />}
+              {active === "escalations" && <Escalations projects={base} onOpen={setOpenId} />}
             </div>
           </>
         )}

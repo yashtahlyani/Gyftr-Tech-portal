@@ -30,6 +30,9 @@ export function reopen(...args: Parameters<typeof local.reopen>) {
 export function setBlock(...args: Parameters<typeof local.setBlock>) {
   return isCloud ? cloud.setBlock(...args) : local.setBlock(...args);
 }
+export function setHold(...args: Parameters<typeof local.setHold>) {
+  return isCloud ? cloud.setHold(...args) : local.setHold(...args);
+}
 export function addComment(...args: Parameters<typeof local.addComment>) {
   return isCloud ? cloud.addComment(...args) : local.addComment(...args);
 }

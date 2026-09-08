@@ -153,6 +153,14 @@ export function setBlock(id: string, blocked: boolean, reason?: string) {
   update(id, (p) => ({ ...p, blocked, blockReason: blocked ? reason : undefined }));
 }
 
+export function setHold(id: string, onHold: boolean, reason: string | undefined, byId: string, byTeam: import("./types").TeamId) {
+  update(id, (p) => ({
+    ...p, onHold, holdReason: onHold ? reason : undefined,
+    heldById: onHold ? byId : undefined, heldByTeam: onHold ? byTeam : undefined,
+    heldAt: onHold ? now() : undefined,
+  }));
+}
+
 export function addComment(id: string, byId: string, text: string, pinned = false) {
   const c: Comment = { id: uid("c"), at: now(), byId, text, pinned };
   update(id, (p) => ({ ...p, comments: [...p.comments, c] }));
@@ -192,7 +200,7 @@ export function updateSubtask(id: string, subId: string, patch: SubtaskPatch) {
   update(id, (p) => ({ ...p, subtasks: p.subtasks.map((s) => (s.id === subId ? { ...s, ...patch } : s)) }));
 }
 
-export function createProject(input: Omit<Project, "id" | "code" | "createdAt" | "stageEnteredAt" | "finalGoLive" | "history" | "comments" | "subtasks" | "attachments" | "stageTargets"> & { subtasks?: SubTask[] }) {
+export function createProject(input: Omit<Project, "id" | "code" | "createdAt" | "stageEnteredAt" | "finalGoLive" | "history" | "comments" | "subtasks" | "attachments" | "stageTargets" | "onHold" | "holdReason" | "heldById" | "heldByTeam" | "heldAt"> & { subtasks?: SubTask[] }) {
   const n = state.length + 1;
   const code = `TP-${String(n).padStart(3, "0")}`;
   const proj: Project = {
@@ -202,6 +210,7 @@ export function createProject(input: Omit<Project, "id" | "code" | "createdAt" |
     createdAt: now(),
     stageEnteredAt: now(),
     finalGoLive: null,
+    onHold: false,
     stageTargets: {},
     subtasks: input.subtasks ?? [],
     comments: [],

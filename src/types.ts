@@ -10,7 +10,7 @@ export type TeamId =
   | "partner"
   | "leadership";
 
-export type Role = "member" | "lead" | "pmo" | "leadership";
+export type Role = "member" | "lead" | "pmo" | "leadership" | "svp";
 
 export interface Person {
   id: string;
@@ -18,6 +18,13 @@ export interface Person {
   team: TeamId;
   role: Role;
   email: string;
+  /** Direct manager's person id — the org reporting chain. Null for people
+   *  outside the Tech hierarchy (Business/Leadership/Partner) and for the
+   *  CTO (root of the tree). Drives SVP-level project visibility. */
+  managerId?: string;
+  /** Real-world department/function (E-Pay, Infra, Testing, etc.) — purely
+   *  descriptive, shown in the UI. NOT used for authorization; that's `team`. */
+  department?: string;
 }
 
 /** Pipeline lane a project sits in (drives the board columns + who owns the ball). */
@@ -26,6 +33,7 @@ export type StageId =
   | "scoping"
   | "to_be_picked"
   | "development"
+  | "pm_review"
   | "qa"
   | "uat"
   | "pre_prod"
@@ -49,7 +57,8 @@ export type StatusId =
   | "business_dependency"
   | "partner_dependency"
   | "on_hold"
-  | "deferred";
+  | "deferred"
+  | "pm_review";
 
 export type Priority = "P0" | "P1" | "P2";
 
@@ -113,6 +122,16 @@ export interface Project {
 
   blocked: boolean;
   blockReason?: string;
+
+  /** "Mark as Hold" — an explicit pause, separate from `blocked` (which
+   *  already means an in-flow blocked status like Business Clarification).
+   *  A held project keeps its stage/status untouched; un-holding just
+   *  returns it to wherever it already was. */
+  onHold: boolean;
+  holdReason?: string;
+  heldById?: string;
+  heldByTeam?: TeamId;
+  heldAt?: number;
 
   stageEnteredAt: number;     // for aging / SLA
   createdAt: number;

@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   ArrowLeft, ArrowRight, Send, CheckCircle2, Circle, Ban, MessageSquare,
   Paperclip, Plus, Lock, CornerUpLeft, RotateCcw, Hand, Star, ExternalLink, Check, X, Repeat, UserCheck,
+  PauseCircle, PlayCircle,
 } from "lucide-react";
 import type { Person, Project, StatusId, StageId, DocKind, TeamId, SubTask } from "../types";
 import {
@@ -9,7 +10,7 @@ import {
   type TransitionSpec,
 } from "../workflow";
 import {
-  transition, setStatus, setBlock, addComment, toggleSubtask, addSubtask, removeSubtask, reassignSubtask,
+  transition, setStatus, setBlock, setHold, addComment, toggleSubtask, addSubtask, removeSubtask, reassignSubtask,
   reassign, addAttachment, resolveNote, updateDetails, updateSubtask, setStageTarget,
 } from "../store";
 
@@ -22,7 +23,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
     </div>
   );
 }
-import { can, canPerformTransition, canCreateSubtask, canEditStageTarget, canAddAttachment, isOverseer, ownerTeam, ownerForTransition } from "../roles";
+import { can, canPerformTransition, canCreateSubtask, canEditStageTarget, canAddAttachment, canHold, isOverseer, ownerTeam, ownerForTransition } from "../roles";
 import { PEOPLE, PEOPLE_BY_ID } from "../people";
 import { daysBetween, relTime, fmtDate } from "../lib";
 import type { SubtaskPatch } from "../cloudStore";
@@ -226,6 +227,8 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
   const [attachUrl, setAttachUrl] = useState("");
   const [attachKind, setAttachKind] = useState<DocKind>("Link");
   const [reassignOpen, setReassignOpen] = useState(false);
+  const [holdDialogOpen, setHoldDialogOpen] = useState(false);
+  const [holdReasonInput, setHoldReasonInput] = useState("");
   const overseer = isOverseer(me);
   const [pinNote, setPinNote] = useState(overseer);
   const pins = project.comments.filter((c) => c.pinned);
@@ -241,6 +244,13 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
     addAttachment(project.id, me.id, attachName.trim(), attachKind, attachUrl.trim() || undefined);
     setAttachName(""); setAttachUrl("");
   };
+  const submitHold = () => {
+    if (!holdReasonInput.trim()) return; // a reason is mandatory — the dialog's Confirm stays disabled otherwise, this is the belt-and-braces check
+    setHold(project.id, true, holdReasonInput.trim(), me.id, me.team);
+    setHoldDialogOpen(false);
+    setHoldReasonInput("");
+  };
+  const releaseHold = () => setHold(project.id, false, undefined, me.id, me.team);
 
   const idx = STAGE_ORDER.indexOf(project.stage);
   const owner = PEOPLE_BY_ID[project.ownerId];
@@ -301,11 +311,25 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
   return (
     <div className="project-page">
       <div className="project-page-head">
-        <button className="btn ghost sm" onClick={onClose} style={{ marginBottom: 12 }}><ArrowLeft size={14} /> Back</button>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <button className="btn ghost sm" onClick={onClose} style={{ marginBottom: 12 }}><ArrowLeft size={14} /> Back</button>
+          <div style={{ marginLeft: "auto" }}>
+            {project.onHold ? (
+              canHold(me, project) && (
+                <button className="btn sm" onClick={releaseHold}><PlayCircle size={14} /> Remove hold</button>
+              )
+            ) : (
+              canHold(me, project) && (
+                <button className="btn sm" onClick={() => setHoldDialogOpen(true)}><PauseCircle size={14} /> Mark as Hold</button>
+              )
+            )}
+          </div>
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
           <span className="card-code">{project.code}</span>
           <PriorityChip p={project.priority} />
           <span className="chip">{project.bifurcation}</span>
+          {project.onHold && <span className="chip" style={{ color: "var(--amber-fg)" }}><PauseCircle size={11} /> On hold</span>}
           {!anyAction && <span className="chip"><Lock size={11} /> view only</span>}
         </div>
         <h1 style={{ margin: "9px 0 8px", fontSize: 21, fontFamily: "var(--font-d)", letterSpacing: "-.01em" }}>{project.title}</h1>
@@ -427,6 +451,23 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
                   </button>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* On-hold banner */}
+          {project.onHold && (
+            <div className="panel" style={{ padding: 13, borderColor: "var(--amber-fg)", boxShadow: "none" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <PauseCircle size={15} color="var(--amber-fg)" /><b style={{ fontSize: 13 }}>On hold</b>
+              </div>
+              <p style={{ margin: "0 0 8px", fontSize: 13, color: "var(--ink)" }}>{project.holdReason}</p>
+              {project.heldById && (
+                <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--ink-mute)" }}>
+                  <Avatar id={project.heldById} size={18} />
+                  {PEOPLE_BY_ID[project.heldById]?.name} · {project.heldByTeam && TEAMS[project.heldByTeam].label}
+                  {project.heldAt && <> · {relTime(project.heldAt)}</>}
+                </div>
+              )}
             </div>
           )}
 
@@ -631,6 +672,32 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
           </div>
         </div>
       </div>
+
+      {holdDialogOpen && (
+        <div className="modal-wrap" onClick={() => setHoldDialogOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", padding: "18px 20px", borderBottom: "1px solid var(--border)" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 16 }}>Mark as Hold</h2>
+                <div style={{ fontSize: 12, color: "var(--text-3)" }}>A reason is required — this shows on the board and in the project header.</div>
+              </div>
+              <button className="icon-btn" style={{ marginLeft: "auto", width: 32, height: 32 }} onClick={() => setHoldDialogOpen(false)}><X size={16} /></button>
+            </div>
+            <div style={{ padding: 20 }}>
+              <div className="field">
+                <label>Reason *</label>
+                <textarea className="input" autoFocus value={holdReasonInput} onChange={(e) => setHoldReasonInput(e.target.value)} placeholder="Why is this project being paused?" />
+              </div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+                <button className="btn" onClick={() => setHoldDialogOpen(false)}>Cancel</button>
+                <button className="btn primary" disabled={!holdReasonInput.trim()} style={{ opacity: holdReasonInput.trim() ? 1 : .5 }} onClick={submitHold}>
+                  <PauseCircle size={14} /> Mark as Hold
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

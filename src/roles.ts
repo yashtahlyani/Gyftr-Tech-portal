@@ -8,8 +8,12 @@ export type Action =
   | "clarify" | "reopen" | "assign" | "comment" | "subtask";
 
 export const isOverseer = (p: Person) => p.role === "pmo" || p.role === "leadership";
-/** Leadership is a pure read-only observer — full visibility, zero edits. */
-export const isReadOnly = (p: Person) => p.role === "leadership";
+/** Leadership and SVPs are pure read-only observers — full (leadership) or
+ *  subtree-scoped (SVP) visibility, zero edits beyond leaving comments. */
+export const isReadOnly = (p: Person) => p.role === "leadership" || p.role === "svp";
+/** SVPs get the same nav shape as overseers (board/list/escalations/overview,
+ *  no queue/team) — they're leadership within their branch, not contributors. */
+export const hasOrgNav = (p: Person) => isOverseer(p) || p.role === "svp";
 
 /** Team currently holding the ball. */
 export function ownerTeam(p: Project): TeamId {
@@ -61,17 +65,50 @@ export function visibleProjects(me: Person, projects: Project[]): Project[] {
   return projects.filter((p) => visibleTo(me, p));
 }
 
+/** Every person id in `me`'s reporting subtree (including themself), walking
+ *  `managerId` down from their own row. Mirrors the DB's my_subtree_ids()
+ *  exactly — SECURITY DEFINER there, plain recursion here, same shape. Pure
+ *  structure, no hardcoded names: add anyone under an SVP in `people` and
+ *  their subtree/visibility updates with zero code changes. */
+export function orgSubtreeIds(me: Person, all: Person[]): Set<string> {
+  const byManager = new Map<string, string[]>();
+  for (const p of all) {
+    if (!p.managerId) continue;
+    const list = byManager.get(p.managerId);
+    if (list) list.push(p.id); else byManager.set(p.managerId, [p.id]);
+  }
+  const out = new Set<string>([me.id]);
+  const queue = [me.id];
+  while (queue.length) {
+    const id = queue.pop()!;
+    for (const childId of byManager.get(id) ?? []) {
+      if (!out.has(childId)) { out.add(childId); queue.push(childId); }
+    }
+  }
+  return out;
+}
+
+/** SVP visibility: a project is visible if any person-reference on it — owner,
+ *  business owner, tech lead, product SPOC, or any subtask assignee — falls in
+ *  the SVP's subtree. Mirrors the DB's p_sel SVP branch exactly. Deliberately
+ *  its own axis, not team-based: an SVP's own `team` is incidental to them
+ *  being read-only leadership, not a court they hold. */
+export function svpVisibleTo(proj: Project, subtree: Set<string>): boolean {
+  if ([proj.ownerId, proj.businessOwnerId, proj.techLeadId, proj.productSpocId].some((id) => id && subtree.has(id))) return true;
+  return proj.subtasks.some((s) => s.assigneeId && subtree.has(s.assigneeId));
+}
+
 /** Navigation is role-specific — contributors and overseers get different apps.
- *  Everyone gets a dashboard + all-projects table; overseers also get
- *  the org-wide board and escalations list. */
+ *  Everyone gets a dashboard + all-projects table; overseers (and SVPs, within
+ *  their branch) also get the board and escalations list. */
 export function navFor(me: Person): ViewKey[] {
-  return isOverseer(me)
+  return hasOrgNav(me)
     ? ["overview", "board", "list", "escalations"]
     : ["overview", "queue", "team", "list"];
 }
 
 export function homeView(me: Person): ViewKey {
-  return isOverseer(me) ? "overview" : "queue";
+  return hasOrgNav(me) ? "overview" : "queue";
 }
 
 /** An open (unresolved) leadership/PMO note pins a project to the top of attention. */
@@ -130,6 +167,20 @@ export function canAddAttachment(me: Person, proj: Project): boolean {
   if (me.role === "pmo") return true;
   return ownerTeam(proj) === me.team || teamsInvolved(proj).has(me.team);
 }
+
+/** "Mark as Hold" — any team except Business, and only a team already
+ *  part of the project's story (matches teamsInvolved, the client mirror of
+ *  the DB's involved_teams). Leadership and SVPs are excluded even though
+ *  their team name technically isn't "business" — both are pure read-only
+ *  observers everywhere else in the app, and this shouldn't be the one
+ *  exception. Mirrors the DB's corrected p_upd hold branch exactly. Same
+ *  actor set governs removing hold — no distinct rule was specified. */
+export function canHold(me: Person, proj: Project): boolean {
+  if (me.role === "pmo") return true;
+  if (me.role === "leadership" || me.role === "svp") return false;
+  return me.team !== "business" && teamsInvolved(proj).has(me.team);
+}
+export const canUnhold = canHold;
 
 /** Lead (or any member) of a team, to hand the ball to. */
 export function leadOf(team: string): string {

@@ -29,6 +29,7 @@ export const STAGES: StageMeta[] = [
   { id: "scoping",       label: "Product Scoping", owner: "product",     slaDays: 5,  defaultStatus: "scoping",                color: "#5B7FB0" },
   { id: "to_be_picked",  label: "To Be Picked",    owner: "tech_spoc",   slaDays: 3,  defaultStatus: "to_be_picked",           color: "#7C8896" },
   { id: "development",   label: "Development",     owner: "development", slaDays: 12, defaultStatus: "dev",                    color: "#C79A3E" },
+  { id: "pm_review",     label: "PM Review",       owner: "product",     slaDays: 2,  defaultStatus: "pm_review",              color: "#8874C7" },
   { id: "qa",            label: "QA",              owner: "qa",          slaDays: 5,  defaultStatus: "qa",                     color: "#2E9E86" },
   { id: "uat",           label: "UAT",             owner: "product",     slaDays: 4,  defaultStatus: "uat",                    color: "#6FA23C" },
   { id: "pre_prod",      label: "Pending Deploy",  owner: "development", slaDays: 2,  defaultStatus: "pending_prod_deployment", color: "#4C8A1E" },
@@ -63,8 +64,12 @@ export const TRANSITIONS: Record<StageId, TransitionSpec[]> = {
     { to: "scoping", label: "Return to Product", toStatus: "scoping", ownerTeam: "product", kind: "back" },
   ],
   development: [
-    { to: "qa", label: "Send to QA", toStatus: "qa", ownerTeam: "qa", kind: "forward" },
+    { to: "pm_review", label: "Send to Project Manager", toStatus: "pm_review", ownerTeam: "product", kind: "forward" },
     { to: "scoping", label: "Ask Product (clarify)", toStatus: "tech_clarification_pending", ownerTeam: "product", kind: "back" },
+  ],
+  pm_review: [
+    { to: "qa", label: "Send to QA", toStatus: "qa", ownerTeam: "qa", kind: "forward" },
+    { to: "development", label: "Send back to Dev", toStatus: "need_bug_fixing", ownerTeam: "development", kind: "reject" },
   ],
   qa: [
     { to: "uat", label: "Pass to UAT", toStatus: "uat", ownerTeam: "product", kind: "forward" },
@@ -115,6 +120,7 @@ export const STATUSES: Record<StatusId, StatusMeta> = {
   need_bug_fixing:            { id: "need_bug_fixing",            label: "Need Bug Fixing",            kind: "active",  stage: "development",  ...ROSE },
   bug_fixing_initiated:       { id: "bug_fixing_initiated",       label: "Bug Fixing Initiated",       kind: "active",  stage: "development",  ...AMBER },
   tech_clarification_pending: { id: "tech_clarification_pending", label: "Tech Clarification Pending", kind: "blocked", stage: "development",  ...ROSE },
+  pm_review:                  { id: "pm_review",                  label: "PM Review",                  kind: "active",  stage: "pm_review",    ...BLUE },
   qa_clarification_pending:   { id: "qa_clarification_pending",   label: "QA Clarification Pending",   kind: "blocked", stage: "qa",           ...ROSE },
   uat:                        { id: "uat",                        label: "UAT",                        kind: "active",  stage: "uat",          ...OLIVE },
   pending_prod_deployment:    { id: "pending_prod_deployment",    label: "Pending Prod Deployment",    kind: "active",  stage: "pre_prod",     ...BLUE },

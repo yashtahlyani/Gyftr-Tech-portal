@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, Lock } from "lucide-react";
+import { AlertTriangle, Lock, PauseCircle } from "lucide-react";
 import type { Person, Project, StageId } from "../types";
 import { STAGES, STAGE_BY_ID, transitionBetween } from "../workflow";
 import { transition } from "../store";
@@ -48,8 +48,15 @@ export function Board({ projects, me, onOpen }: { projects: Project[]; me: Perso
   const [over, setOver] = useState<StageId | null>(null);
   const readOnly = isReadOnly(me);
 
+  // Held projects get pulled into their own leading category regardless of
+  // stage — stage/status are untouched underneath, so un-holding (from the
+  // Drawer) just returns a project to whatever stage column it already had.
+  const held = projects
+    .filter((p) => p.onHold)
+    .sort((a, b) => (b.heldAt ?? 0) - (a.heldAt ?? 0));
+
   const byStage = (stage: StageId) =>
-    projects.filter((p) => p.stage === stage)
+    projects.filter((p) => p.stage === stage && !p.onHold)
       .sort((a, b) => (Number(openLeadershipNote(b)) - Number(openLeadershipNote(a))) || (a.stageEnteredAt - b.stageEnteredAt));
 
   const handleDrop = (toStage: StageId, id: string) => {
@@ -62,6 +69,17 @@ export function Board({ projects, me, onOpen }: { projects: Project[]; me: Perso
 
   return (
     <div className="board">
+      <div className="col">
+        <div className="col-head">
+          <span className="col-accent" style={{ background: "var(--amber-fg, #C79A3E)" }} />
+          <b><PauseCircle size={13} style={{ verticalAlign: -2, marginRight: 4 }} />Projects on Hold</b>
+          <span className="col-count">{held.length}</span>
+        </div>
+        <div className="col-body">
+          {held.map((p) => <Card key={p.id} project={p} draggable={false} onOpen={() => onOpen(p.id)} />)}
+          {held.length === 0 && <div className="col-empty">Nothing on hold</div>}
+        </div>
+      </div>
       {STAGES.map((stage) => {
         const list = byStage(stage.id);
         return (

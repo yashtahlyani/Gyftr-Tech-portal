@@ -50,6 +50,9 @@ function mapProject(r: Row): Project {
     priority: r.priority, bifurcation: r.bifurcation ?? "B2C",
     stage: r.stage, status: r.status, ownerId: r.owner_id, businessOwnerId: r.business_owner_id,
     blocked: r.blocked, blockReason: r.block_reason ?? undefined,
+    onHold: r.on_hold ?? false, holdReason: r.hold_reason ?? undefined,
+    heldById: r.held_by_id ?? undefined, heldByTeam: r.held_by_team ?? undefined,
+    heldAt: r.held_at ? Date.parse(r.held_at) : undefined,
     stageEnteredAt: Date.parse(r.stage_entered_at), createdAt: Date.parse(r.created_at),
     targetGoLive: r.target_go_live, sacrosanctGoLive: r.sacrosanct_go_live,
     priorityMonth: r.priority_month, timelineEta: r.timeline_eta, devEffortDays: r.dev_effort_days,
@@ -223,6 +226,23 @@ export function setBlock(id: string, blocked: boolean, reason?: string) {
   patchProject(id, { blocked, block_reason: blocked ? reason ?? null : null });
 }
 
+/** "Mark as Hold" — an explicit pause, separate from setBlock/blocked (see
+ *  types.ts). Stage/status are untouched; un-holding (onHold=false) just
+ *  clears the hold fields and the project resumes wherever it already was. */
+export function setHold(id: string, onHold: boolean, reason: string | undefined, byId: string, byTeam: import("./types").TeamId) {
+  const heldAt = Date.now();
+  localPatch(id, {
+    onHold, holdReason: onHold ? reason : undefined,
+    heldById: onHold ? byId : undefined, heldByTeam: onHold ? byTeam : undefined,
+    heldAt: onHold ? heldAt : undefined,
+  });
+  patchProject(id, {
+    on_hold: onHold, hold_reason: onHold ? reason ?? null : null,
+    held_by_id: onHold ? byId : null, held_by_team: onHold ? byTeam : null,
+    held_at: onHold ? new Date(heldAt).toISOString() : null,
+  });
+}
+
 export function addComment(id: string, byId: string, text: string, pinned = false) {
   if (!supabase) return;
   const tempId = `tmp_${Date.now()}`;
@@ -304,7 +324,7 @@ export function reassignSubtask(id: string, subId: string, assigneeId: string | 
 }
 
 export async function createProject(
-  input: Omit<Project, "id" | "code" | "createdAt" | "stageEnteredAt" | "finalGoLive" | "history" | "comments" | "subtasks" | "attachments" | "stageTargets"> & { subtasks?: SubTask[] }
+  input: Omit<Project, "id" | "code" | "createdAt" | "stageEnteredAt" | "finalGoLive" | "history" | "comments" | "subtasks" | "attachments" | "stageTargets" | "onHold" | "holdReason" | "heldById" | "heldByTeam" | "heldAt"> & { subtasks?: SubTask[] }
 ): Promise<Project> {
   if (!supabase) throw new Error("Cloud mode is off.");
   const { data, error } = await supabase

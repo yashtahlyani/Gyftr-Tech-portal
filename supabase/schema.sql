@@ -5,18 +5,29 @@
 -- ══════════════════════════════════════════════════════════════
 
 create type team_id  as enum ('business','product','tech_spoc','development','design','qa','partner','leadership');
-create type role_id  as enum ('member','lead','pmo','leadership');
-create type stage_id as enum ('intake','scoping','to_be_picked','development','qa','uat','pre_prod','live');
+-- 'svp' added for org-hierarchy visibility (see my_subtree_ids()/is_svp() below)
+create type role_id  as enum ('member','lead','pmo','leadership','svp');
+-- 'pm_review' inserted between development and qa — Development -> Send to
+-- Project Manager -> QA. Declared IN POSITION: this enum's order IS pipeline
+-- order everywhere else in this file (stage_targets sequencing etc).
+create type stage_id as enum ('intake','scoping','to_be_picked','development','pm_review','qa','uat','pre_prod','live');
 create type priority as enum ('P0','P1','P2');
 
 -- ── Directory: links a Supabase Auth user to a team + role ──
 create table people (
-  id      uuid primary key default gen_random_uuid(),
-  auth_id uuid unique references auth.users(id) on delete cascade,
-  name    text not null,
-  email   text unique not null,
-  team    team_id not null,
-  role    role_id not null default 'member'
+  id          uuid primary key default gen_random_uuid(),
+  auth_id     uuid unique references auth.users(id) on delete cascade,
+  name        text not null,
+  email       text unique not null,
+  team        team_id not null,
+  role        role_id not null default 'member',
+  -- Org reporting chain — null for people outside the Tech hierarchy
+  -- (Business/Leadership/Partner) and for the CTO (root of the tree).
+  -- Drives SVP-level project visibility (my_subtree_ids() below).
+  manager_id  uuid references people(id),
+  -- Real-world department/function (E-Pay, Infra, Testing, etc.) — purely
+  -- descriptive, shown in the UI. NOT used for authorization; that's `team`.
+  department  text
 );
 
 -- ── Identity helpers (SECURITY DEFINER so RLS policies can call them) ──
@@ -36,12 +47,30 @@ $$;
 -- Which team owns the ball while a project sits in a given stage.
 -- UAT is owned by Product (not Business) — go-live/deploy approval sits with
 -- Product per the CEO's process, matching TRANSITIONS.qa's forward in workflow.ts.
+-- pm_review ("Send to Project Manager") is also owned by Product — there's no
+-- separate "Project Manager" team, Product plays that role per this app's process.
 create or replace function stage_owner(s stage_id) returns team_id language sql immutable as $$
   select case s
     when 'intake' then 'business' when 'scoping' then 'product'
     when 'to_be_picked' then 'tech_spoc' when 'development' then 'development'
+    when 'pm_review' then 'product'
     when 'qa' then 'qa' when 'uat' then 'product' when 'pre_prod' then 'development'
     else 'leadership' end::team_id;
+$$;
+
+-- Every person id in the caller's reporting subtree (including themself),
+-- walking manager_id down from their own row. SECURITY DEFINER so RLS
+-- policies can call it. Mirrored client-side in roles.ts's orgSubtreeIds.
+create or replace function my_subtree_ids() returns uuid[] language sql stable security definer as $$
+  with recursive sub as (
+    select id from people where auth_id = auth.uid()
+    union all
+    select p.id from people p join sub s on p.manager_id = s.id
+  )
+  select coalesce(array_agg(id), '{}') from sub;
+$$;
+create or replace function is_svp() returns boolean language sql stable security definer as $$
+  select coalesce(my_role() = 'svp', false);
 $$;
 
 create sequence projects_code_seq;
@@ -62,6 +91,14 @@ create table projects (
   business_owner_id  uuid references people(id),
   blocked            boolean not null default false,
   block_reason       text,
+  -- "Mark as Hold" — an explicit pause, separate from blocked/block_reason
+  -- above (which already mean an in-flow blocked status). Doesn't touch
+  -- stage/status at all; un-holding just clears these five columns.
+  on_hold            boolean not null default false,
+  hold_reason        text,
+  held_by_id         uuid references people(id),
+  held_by_team       team_id,
+  held_at            timestamptz,
   -- denormalised for RLS — maintained by trigger below:
   owner_team         team_id not null default 'business',
   involved_teams     team_id[] not null default '{business}',
@@ -162,10 +199,18 @@ create table attachments (
   by_id uuid references people(id), at timestamptz not null default now()
 );
 
--- Can the current user SEE this project? (their team is involved, or they oversee)
+-- Can the current user SEE this project? (their team is involved, they oversee,
+-- or — for an SVP — any person-reference on the project falls in their subtree)
 create or replace function can_see(pid uuid) returns boolean language sql stable security definer as $$
   select is_overseer() or exists (
-    select 1 from projects p where p.id = pid and my_team() = any(p.involved_teams)
+    select 1 from projects p where p.id = pid and (
+      my_team() = any(p.involved_teams)
+      or (is_svp() and (
+        p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
+        or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
+        or exists (select 1 from subtasks st where st.project_id = p.id and st.assignee_id = any(my_subtree_ids()))
+      ))
+    )
   );
 $$;
 -- Can they ACT on it? (their team currently holds the ball, or PMO)
@@ -197,12 +242,32 @@ alter table stage_targets enable row level security;
 -- renegotiate go-live dates with a partner without waiting on whichever team holds the
 -- ball — RLS only decides row reachability here; enforce_project_update_scope() below
 -- is what actually restricts them to touching just the date columns.
-create policy p_sel on projects for select using ( is_overseer() or my_team() = any(involved_teams) );
+-- SVP branch mirrors can_see()'s: visible if any person-reference on the
+-- project (owner, business owner, tech lead, product SPOC, or any subtask
+-- assignee) falls in the SVP's reporting subtree. Enforced here, not just in
+-- the UI (roles.ts's svpVisibleTo is the client-side mirror for the same UX).
+create policy p_sel on projects for select using (
+  is_overseer()
+  or my_team() = any(involved_teams)
+  or (is_svp() and (
+    owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
+    or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
+    or exists (select 1 from subtasks st where st.project_id = projects.id and st.assignee_id = any(my_subtree_ids()))
+  ))
+);
 create policy p_ins on projects for insert with check ( is_pmo() or my_team() in ('business','product','tech_spoc') );
+-- Last USING branch: "any team except Business, already involved" may reach
+-- a project for the Mark-as-Hold action even outside their own court.
+-- Leadership/SVP are explicitly excluded — both are pure read-only observers
+-- everywhere else in the app, and this shouldn't be the one exception.
+-- enforce_project_update_scope() below then restricts this actor to ONLY the
+-- hold columns, mirroring exactly how the product-lead case is restricted to
+-- ONLY the date columns.
 create policy p_upd on projects for update
   using (
     is_pmo() or my_team() = owner_team or (stage = 'to_be_picked' and my_team() = 'development')
     or (my_role() = 'lead' and my_team() = 'product')
+    or (my_role() not in ('leadership', 'svp') and my_team() <> 'business' and my_team() = any(involved_teams))
   )
   with check (
     is_pmo() or my_team() = any(involved_teams)
@@ -248,6 +313,11 @@ begin
     and new.sacrosanct_go_live is not distinct from old.sacrosanct_go_live
     and new.target_go_live is not distinct from old.target_go_live
     and new.timeline_eta is not distinct from old.timeline_eta
+    and new.on_hold is not distinct from old.on_hold
+    and new.hold_reason is not distinct from old.hold_reason
+    and new.held_by_id is not distinct from old.held_by_id
+    and new.held_by_team is not distinct from old.held_by_team
+    and new.held_at is not distinct from old.held_at
   then
     return new;
   end if;
@@ -276,6 +346,36 @@ begin
       or new.sacrosanct_go_live is distinct from old.sacrosanct_go_live
     then
       raise exception 'Product leads may only edit go-live dates (Expected / Timeline ETA) outside their own court';
+    end if;
+    return new;
+  end if;
+  -- Parallel carve-out for the p_upd hold branch: any non-Business team
+  -- already involved, acting outside their own court, may change ONLY the
+  -- hold columns. Leadership/SVP excluded (same reasoning as the RLS policy).
+  if my_role() not in ('leadership', 'svp') and my_team() <> 'business' and my_team() = any(old.involved_teams) then
+    if new.title is distinct from old.title
+      or new.brd is distinct from old.brd
+      or new.partner is distinct from old.partner
+      or new.brand is distinct from old.brand
+      or new.lob is distinct from old.lob
+      or new.priority is distinct from old.priority
+      or new.bifurcation is distinct from old.bifurcation
+      or new.stage is distinct from old.stage
+      or new.status is distinct from old.status
+      or new.owner_id is distinct from old.owner_id
+      or new.business_owner_id is distinct from old.business_owner_id
+      or new.blocked is distinct from old.blocked
+      or new.block_reason is distinct from old.block_reason
+      or new.priority_month is distinct from old.priority_month
+      or new.dev_effort_days is distinct from old.dev_effort_days
+      or new.reason_for_delay is distinct from old.reason_for_delay
+      or new.product_spoc_id is distinct from old.product_spoc_id
+      or new.tech_lead_id is distinct from old.tech_lead_id
+      or new.sacrosanct_go_live is distinct from old.sacrosanct_go_live
+      or new.target_go_live is distinct from old.target_go_live
+      or new.timeline_eta is distinct from old.timeline_eta
+    then
+      raise exception 'Only hold-related fields may be changed from outside your own court';
     end if;
     return new;
   end if;
