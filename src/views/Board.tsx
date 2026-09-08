@@ -5,6 +5,7 @@ import { STAGES, STAGE_BY_ID, transitionBetween } from "../workflow";
 import { transition } from "../store";
 import { can, canPerformTransition, isReadOnly, ownerForTransition, openLeadershipNote } from "../roles";
 import { Avatar, StatusPill, PriorityChip, AgingChip, OverdueTag, CeoNote } from "../ui";
+import { toast } from "../toast";
 
 function Card({ project, draggable, onOpen }: { project: Project; draggable: boolean; onOpen: () => void }) {
   const done = project.subtasks.filter((s) => s.done).length;
@@ -64,6 +65,16 @@ export function Board({ projects, me, onOpen }: { projects: Project[]; me: Perso
     if (!proj) return;
     const spec = transitionBetween(proj.stage, toStage);          // only legal moves
     if (!spec || !canPerformTransition(me, proj, spec)) return;
+    // "Send to Tech Manager" needs an explicit "who exactly is this for"
+    // pick (SVP/CTO/dispatcher) — a drag has no way to ask that, and
+    // ownerForTransition's leadOf() fallback would silently dump everything
+    // on whichever one person it resolves to instead of letting the sender
+    // choose. Route to the Drawer's picker instead of guessing.
+    if (spec.to === "to_be_picked") {
+      toast("Open the project to pick who on the Tech side this is for.");
+      onOpen(id);
+      return;
+    }
     transition(id, me.id, spec, ownerForTransition(spec, me));
   };
 

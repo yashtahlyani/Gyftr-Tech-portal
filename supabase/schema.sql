@@ -114,6 +114,22 @@ create or replace function is_manager() returns boolean language sql stable secu
     where me.auth_id = auth.uid()
   );
 $$;
+-- Can this person dispatch fresh to_be_picked work? Two distinct routes:
+-- a real manager (is_manager()) whose subtree includes a tech_spoc/
+-- development person — scoped to their own branch's queue; or an explicit,
+-- data-driven "Project mgmt" dispatch role (department='Project mgmt', e.g.
+-- Anandita) — unrestricted across the WHOLE to_be_picked queue, since a
+-- dispatcher has no engineering reports of their own to scope to; their job
+-- is triaging Product's handoffs to the right SVP/branch. Mirrored in
+-- roles.ts's isProjectMgmtDispatcher() + the isManager() branch already in
+-- can()'s pickup logic.
+create or replace function can_dispatch_pickup() returns boolean language sql stable security definer as $$
+  select coalesce(
+    (is_manager() and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
+    or exists (select 1 from people me where me.auth_id = auth.uid() and me.department = 'Project mgmt'),
+    false
+  );
+$$;
 -- True where the old blanket "my team holds court" visibility/action rule
 -- would leak across hierarchy branches — specifically the 3 team_id values
 -- (development/qa/design) that coarsely cram ~15 real Tech departments into
@@ -307,14 +323,14 @@ $$;
 -- Can the current user SEE this project? Overseer, global-view grant, team
 -- involved (unless has_coarse_team_leak() — see that function's comment: a
 -- Tech-hierarchy person's team-court is too coarse to trust on its own), a
--- manager's to_be_picked queue for their own reports' team, or —
+-- dispatcher's to_be_picked queue (can_dispatch_pickup() — their own
+-- branch's reports, or the whole queue for a Project-mgmt dispatcher), or —
 -- structurally, for anyone with reports (any depth, any tier) — subtree_owns().
 create or replace function can_see(pid uuid) returns boolean language sql stable security definer as $$
   select is_overseer() or sees_all_projects() or exists (
     select 1 from projects p where p.id = pid and (
       (my_team() = any(p.involved_teams) and not has_coarse_team_leak())
-      or (is_manager() and p.stage = 'to_be_picked'
-          and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
+      or (p.stage = 'to_be_picked' and can_dispatch_pickup())
     )
   ) or subtree_owns(pid);
 $$;
@@ -366,8 +382,7 @@ create policy p_sel on projects for select using (
   is_overseer()
   or sees_all_projects()
   or (my_team() = any(involved_teams) and not has_coarse_team_leak())
-  or (is_manager() and stage = 'to_be_picked'
-      and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
+  or (stage = 'to_be_picked' and can_dispatch_pickup())
   or subtree_owns(id)
 );
 create policy p_ins on projects for insert with check ( is_pmo() or my_team() in ('business','product','tech_spoc') );
@@ -413,8 +428,7 @@ create policy p_upd on projects for update
     is_pmo()
     or (my_team() = owner_team and not has_coarse_team_leak())
     or (stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
-    or (is_manager() and stage = 'to_be_picked'
-        and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
+    or (stage = 'to_be_picked' and can_dispatch_pickup())
     or (has_coarse_team_leak() and subtree_leads(id))
     or (my_role() = 'lead' and my_team() = 'product')
     or (
@@ -481,8 +495,7 @@ begin
   if is_pmo()
     or (my_team() = old.owner_team and not has_coarse_team_leak())
     or (old.stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
-    or (is_manager() and old.stage = 'to_be_picked'
-        and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
+    or (old.stage = 'to_be_picked' and can_dispatch_pickup())
     or (has_coarse_team_leak() and subtree_leads(old.id))
   then
     return new;

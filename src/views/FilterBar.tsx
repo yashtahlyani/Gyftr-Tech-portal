@@ -1,18 +1,18 @@
-import { Search, X, Ban, AlertOctagon } from "lucide-react";
+import { Search, X, Ban, AlertOctagon, PauseCircle } from "lucide-react";
 import type { Project } from "../types";
 import { STATUS_LIST } from "../workflow";
-import { overdueInfo } from "../lib";
+import { overdueInfo, personLabel } from "../lib";
 import { PEOPLE } from "../people";
 
 export interface Filters {
   q: string; lob: string; partner: string; brand: string; priority: string; status: string; owner: string;
-  blocked: boolean; overdue: boolean;
+  blocked: boolean; overdue: boolean; onHold: boolean;
 }
 
-export const EMPTY_FILTERS: Filters = { q: "", lob: "all", partner: "all", brand: "all", priority: "all", status: "all", owner: "all", blocked: false, overdue: false };
+export const EMPTY_FILTERS: Filters = { q: "", lob: "all", partner: "all", brand: "all", priority: "all", status: "all", owner: "all", blocked: false, overdue: false, onHold: false };
 
 export function isFiltering(f: Filters): boolean {
-  return f.q !== "" || f.lob !== "all" || f.partner !== "all" || f.brand !== "all" || f.priority !== "all" || f.status !== "all" || f.owner !== "all" || f.blocked || f.overdue;
+  return f.q !== "" || f.lob !== "all" || f.partner !== "all" || f.brand !== "all" || f.priority !== "all" || f.status !== "all" || f.owner !== "all" || f.blocked || f.overdue || f.onHold;
 }
 
 export function applyFilters(projects: Project[], f: Filters): Project[] {
@@ -27,6 +27,7 @@ export function applyFilters(projects: Project[], f: Filters): Project[] {
     if (f.owner !== "all" && p.ownerId !== f.owner) return false;
     if (f.blocked && !p.blocked) return false;
     if (f.overdue && !overdueInfo(p.sacrosanctGoLive, p.targetGoLive, p.stage === "live").overdue) return false;
+    if (f.onHold && !p.onHold) return false;
     return true;
   });
 }
@@ -63,10 +64,15 @@ export function FilterBar({ filters, setFilters, lobs, partners, brands }: {
       </select>
       <select className="fsel" value={filters.owner} onChange={(e) => set({ owner: e.target.value })}>
         <option value="all">Anyone</option>
-        {PEOPLE.filter((p) => p.role !== "leadership").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        {/* Deliberately not filtered by active — this searches EXISTING projects by
+           their (possibly retired) owner, not an assignment candidate list. */}
+        {PEOPLE.filter((p) => p.role !== "leadership").map((p) => <option key={p.id} value={p.id}>{personLabel(p)}</option>)}
       </select>
       <button className={`ftoggle ${filters.blocked ? "on" : ""}`} onClick={() => set({ blocked: !filters.blocked })}>
         <Ban size={13} /> Blocked
+      </button>
+      <button className={`ftoggle ${filters.onHold ? "on" : ""}`} onClick={() => set({ onHold: !filters.onHold })}>
+        <PauseCircle size={13} /> On Hold
       </button>
       <button className={`ftoggle ${filters.overdue ? "on" : ""}`} onClick={() => set({ overdue: !filters.overdue })}>
         <AlertOctagon size={13} /> Overdue

@@ -25,19 +25,57 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 }
 import { can, canPerformTransition, canCreateSubtask, canEditStageTarget, canAddAttachment, canHold, isOverseer, ownerTeam, ownerForTransition, candidatesForTeam } from "../roles";
 import { PEOPLE, PEOPLE_BY_ID } from "../people";
-import { daysBetween, relTime, fmtDate } from "../lib";
+import { daysBetween, relTime, fmtDate, personLabel } from "../lib";
 import type { SubtaskPatch } from "../cloudStore";
 import { Avatar, StatusPill, PriorityChip, AgingChip, OverdueTag } from "../ui";
 
 const DOC_KINDS: DocKind[] = ["BRD", "PRD", "Figma", "HTML", "Doc"];
 const kindIcon = (k: string) => (k === "forward" ? Hand : k === "reopen" ? RotateCcw : CornerUpLeft);
 
+/** A person `<select>` with an inline search filter once the pool is big
+ *  enough that scrolling a bare dropdown stops being usable. Each option
+ *  shows personLabel() — the name plus a short "what they do" descriptor —
+ *  plus an optional `extra` suffix (e.g. which team/path this candidate
+ *  belongs to, for a picker spanning several forward paths at once) — so
+ *  picking the right person doesn't require already knowing who's who, and
+ *  the search box matches against exactly what's rendered, nothing more. */
+function PersonPicker({
+  candidates, value, onChange, title, className, style, extra,
+}: { candidates: Person[]; value: string; onChange: (id: string) => void; title?: string; className?: string; style?: React.CSSProperties; extra?: (p: Person) => string }) {
+  const [query, setQuery] = useState("");
+  // A placeholder sentinel (empty id, e.g. "Unassigned"/"—") is just a plain
+  // label — it isn't a real person, so it gets none of personLabel()'s
+  // "what they do" bracket or the extra (team/path) suffix.
+  const label = (p: Person) => (p.id ? (extra ? `${personLabel(p)} · ${extra(p)}` : personLabel(p)) : p.name);
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? candidates.filter((p) => label(p).toLowerCase().includes(q))
+    : candidates;
+  const selected = candidates.find((p) => p.id === value);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+      {candidates.length > 6 && (
+        <input
+          className="input sm" placeholder="Search…" value={query}
+          onChange={(e) => setQuery(e.target.value)} style={{ width: "100%" }}
+        />
+      )}
+      <select className={className ?? "select sm"} style={style} value={value} onChange={(e) => onChange(e.target.value)} title={title}>
+        {!filtered.some((p) => p.id === value) && (
+          <option value={value}>{selected ? label(selected) : (PEOPLE_BY_ID[value]?.name ?? "—")}</option>
+        )}
+        {filtered.map((p) => <option key={p.id} value={p.id}>{label(p)}</option>)}
+      </select>
+    </div>
+  );
+}
+
 /** A transition action paired with an explicit "who exactly is this for" picker,
  *  scoped to the receiving team — beats silently auto-assigning to a guessed lead. */
 function TransitionButton({
   spec, me, fromStage, primary, danger, onFire,
 }: { spec: TransitionSpec; me: Person; fromStage: StageId; primary?: boolean; danger?: boolean; onFire: (spec: TransitionSpec, ownerId: string) => void }) {
-  const candidates = candidatesForTeam(me, PEOPLE, spec.ownerTeam, fromStage);
+  const candidates = candidatesForTeam(me, PEOPLE, spec.ownerTeam, fromStage, spec.to);
   const [to, setTo] = useState(() => {
     const def = ownerForTransition(spec, me);
     return candidates.some((p) => p.id === def) ? def : candidates[0]?.id ?? "";
@@ -46,12 +84,12 @@ function TransitionButton({
   return (
     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
       {candidates.length > 1 && (
-        <select
-          className={`select ${primary ? "" : "sm"}`} style={{ maxWidth: primary ? undefined : 130, flex: primary ? 1 : undefined, minWidth: 0 }}
-          value={to} onChange={(e) => setTo(e.target.value)} title={`Who on ${TEAMS[spec.ownerTeam].label} is this for?`}
-        >
-          {candidates.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        <PersonPicker
+          candidates={candidates} value={to} onChange={setTo}
+          title={`Who on ${TEAMS[spec.ownerTeam].label} is this for?`}
+          className={`select ${primary ? "" : "sm"}`}
+          style={{ maxWidth: primary ? undefined : 130, flex: primary ? 1 : undefined, minWidth: 0 }}
+        />
       )}
       <button className={`btn ${primary ? "primary" : "sm"} ${danger ? "danger" : ""}`} style={{ flex: "none" }} onClick={() => onFire(spec, to)}>
         {primary ? <>{spec.label} <ArrowRight size={14} /></> : <><Icon size={14} /> {spec.label}</>}
@@ -65,11 +103,12 @@ function TransitionButton({
  *  merged "who's this for" picker spanning every team involved — pick the
  *  person, the path (stage/status) follows from whichever team they're on. */
 function ForwardPicker({ forwards, me, fromStage, onFire }: { forwards: TransitionSpec[]; me: Person; fromStage: StageId; onFire: (spec: TransitionSpec, ownerId: string) => void }) {
-  const options = forwards.flatMap((spec) => candidatesForTeam(me, PEOPLE, spec.ownerTeam, fromStage).map((person) => ({ person, spec })));
+  const options = forwards.flatMap((spec) => candidatesForTeam(me, PEOPLE, spec.ownerTeam, fromStage, spec.to).map((person) => ({ person, spec })));
+  const specFor = new Map(options.map((o) => [o.person.id, o.spec]));
+  const candidates = options.map((o) => o.person);
   const defaultId = ownerForTransition(forwards[0], me);
-  const [selectedId, setSelectedId] = useState(() => (options.some((o) => o.person.id === defaultId) ? defaultId : options[0]?.person.id ?? ""));
-  const selected = options.find((o) => o.person.id === selectedId) ?? options[0];
-  if (!selected) {
+  const [selectedId, setSelectedId] = useState(() => (candidates.some((p) => p.id === defaultId) ? defaultId : candidates[0]?.id ?? ""));
+  if (candidates.length === 0) {
     const teams = [...new Set(forwards.map((f) => f.ownerTeam))].join(", ");
     return (
       <div style={{ fontSize: 12, color: "var(--amber-fg)", padding: "8px 0" }}>
@@ -77,15 +116,18 @@ function ForwardPicker({ forwards, me, fromStage, onFire }: { forwards: Transiti
       </div>
     );
   }
+  const selectedSpec = specFor.get(selectedId) ?? forwards[0];
   return (
     <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-      {options.length > 1 && (
-        <select className="select" style={{ flex: 1, minWidth: 0 }} value={selected.person.id} onChange={(e) => setSelectedId(e.target.value)} title="Who exactly is this for?">
-          {options.map((o) => <option key={o.person.id} value={o.person.id}>{o.person.name} · {TEAMS[o.spec.ownerTeam].label}</option>)}
-        </select>
+      {candidates.length > 1 && (
+        <PersonPicker
+          candidates={candidates} value={selectedId} onChange={setSelectedId}
+          title="Who exactly is this for?" className="select" style={{ flex: 1, minWidth: 0 }}
+          extra={(p) => TEAMS[specFor.get(p.id)!.ownerTeam].label}
+        />
       )}
-      <button className="btn primary" style={{ flex: "none" }} onClick={() => onFire(selected.spec, selected.person.id)}>
-        {selected.spec.label} <ArrowRight size={14} />
+      <button className="btn primary" style={{ flex: "none" }} onClick={() => onFire(selectedSpec, selectedId)}>
+        {selectedSpec.label} <ArrowRight size={14} />
       </button>
     </div>
   );
@@ -172,7 +214,7 @@ function SubtaskRow({ s, project, me }: { s: SubTask; project: Project; me: Pers
             onBlur={() => setReassigning(false)}
           >
             <option value="">Unassigned</option>
-            {PEOPLE.filter((p) => p.role !== "leadership" && (p.active !== false || p.id === s.assigneeId)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {PEOPLE.filter((p) => p.role !== "leadership" && (p.active !== false || p.id === s.assigneeId)).map((p) => <option key={p.id} value={p.id}>{personLabel(p)}</option>)}
           </select>
         ) : (
           <button disabled={!canManage} onClick={() => setReassigning(true)} title={assignee ? assignee.name : "Unassigned — click to assign"} style={{ display: "flex", flex: "none" }}>
@@ -383,13 +425,13 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
                   onChange={(e) => { reassign(project.id, e.target.value); setReassignOpen(false); }}
                   onBlur={() => setReassignOpen(false)}
                 >
-                  {PEOPLE.filter((p) => (p.team === oTeam && p.active !== false) || p.id === project.ownerId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {PEOPLE.filter((p) => (p.team === oTeam && p.active !== false) || p.id === project.ownerId).map((p) => <option key={p.id} value={p.id}>{personLabel(p)}</option>)}
                 </select>
               </div>
             )}
             {availableForwards.length > 0 && (
               <div style={{ marginTop: 11 }}>
-                <ForwardPicker forwards={availableForwards} me={me} fromStage={project.stage} onFire={doTransition} />
+                <ForwardPicker key={project.stage} forwards={availableForwards} me={me} fromStage={project.stage} onFire={doTransition} />
               </div>
             )}
             {!anyAction && (
@@ -508,10 +550,11 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
                 <select className="select" style={{ maxWidth: 130 }} value={subTeam} onChange={(e) => { setSubTeam(e.target.value as TeamId); setSubAssignee(""); }}>
                   {Object.values(TEAMS).filter((t) => t.id !== "leadership" && t.id !== "partner").map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
                 </select>
-                <select className="select" style={{ maxWidth: 140 }} value={subAssignee} onChange={(e) => setSubAssignee(e.target.value)}>
-                  <option value="">Unassigned</option>
-                  {subCandidates.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+                <PersonPicker
+                  candidates={[{ id: "", name: "Unassigned", team: subTeam, role: "member", email: "" } as Person, ...subCandidates]}
+                  value={subAssignee} onChange={setSubAssignee}
+                  className="select" style={{ maxWidth: 180 }}
+                />
                 <input className="input mono" type="date" style={{ maxWidth: 140 }} title="Expected date (set by you, the assigner)" value={subExpectedDate} onChange={(e) => setSubExpectedDate(e.target.value)} />
                 <button className="btn sm" onClick={addSub}><Plus size={14} /></button>
               </div>
@@ -599,18 +642,24 @@ export function Drawer({ project, me, onClose }: { project: Project; me: Person;
               </DetailRow>
               <DetailRow label="Product SPOC">
                 {canEdit
-                  ? <select className="select sm" style={{ maxWidth: 140 }} value={project.productSpocId ?? ""} onChange={(e) => updateDetails(project.id, { productSpocId: e.target.value || null })}>
-                      <option value="">—</option>
-                      {PEOPLE.filter((p) => (p.team === "product" || p.team === "tech_spoc") && (p.active !== false || p.id === project.productSpocId)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
+                  ? <PersonPicker
+                      candidates={[{ id: "", name: "—", team: "product", role: "member", email: "" } as Person,
+                        ...PEOPLE.filter((p) => (p.team === "product" || p.team === "tech_spoc") && (p.active !== false || p.id === project.productSpocId))]}
+                      value={project.productSpocId ?? ""}
+                      onChange={(id) => updateDetails(project.id, { productSpocId: id || null })}
+                      className="select sm" style={{ maxWidth: 180 }}
+                    />
                   : <b style={{ color: "var(--ink-soft)" }}>{project.productSpocId ? PEOPLE_BY_ID[project.productSpocId]?.name : "—"}</b>}
               </DetailRow>
               <DetailRow label="Tech lead">
                 {canEdit
-                  ? <select className="select sm" style={{ maxWidth: 140 }} value={project.techLeadId ?? ""} onChange={(e) => updateDetails(project.id, { techLeadId: e.target.value || null })}>
-                      <option value="">—</option>
-                      {PEOPLE.filter((p) => p.team === "development" && (p.active !== false || p.id === project.techLeadId)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
+                  ? <PersonPicker
+                      candidates={[{ id: "", name: "—", team: "development", role: "member", email: "" } as Person,
+                        ...PEOPLE.filter((p) => p.team === "development" && (p.active !== false || p.id === project.techLeadId))]}
+                      value={project.techLeadId ?? ""}
+                      onChange={(id) => updateDetails(project.id, { techLeadId: id || null })}
+                      className="select sm" style={{ maxWidth: 180 }}
+                    />
                   : <b style={{ color: "var(--ink-soft)" }}>{project.techLeadId ? PEOPLE_BY_ID[project.techLeadId]?.name : "—"}</b>}
               </DetailRow>
               <DetailRow label="Created"><b style={{ color: "var(--ink-soft)" }}>{relTime(project.createdAt)}</b></DetailRow>

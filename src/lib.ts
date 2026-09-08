@@ -1,5 +1,18 @@
 /* ─── Small shared helpers + optional Supabase client ─── */
 import { createClient } from "@supabase/supabase-js";
+import type { Person } from "./types";
+import { TEAMS } from "./workflow";
+
+/** "Name (what they do)" — department if set (e.g. "E-Pay"), else the team
+ *  label, plus a short role qualifier for leads/SVPs/PMO. Used everywhere a
+ *  person picker/filter needs more than a bare name to disambiguate a large
+ *  pool (Drawer.tsx's pickers, FilterBar.tsx's owner filter). */
+export function personLabel(p: Person): string {
+  const area = p.department || TEAMS[p.team].label;
+  const roleShort = p.role === "svp" ? "SVP" : p.role === "lead" ? "Lead" : p.role === "pmo" ? "PMO" : "";
+  const bracket = [area, roleShort].filter(Boolean).join(" · ");
+  return bracket ? `${p.name} (${bracket})` : p.name;
+}
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;

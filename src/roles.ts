@@ -181,7 +181,12 @@ export function can(action: Action, me: Person, proj?: Project): boolean {
   if (!proj) return me.role === "pmo";
   if (me.role === "pmo") return true;               // PMO is the process owner
   if (action === "pickup") {
-    if (proj.stage !== "to_be_picked" || !["tech_spoc", "development"].includes(me.team)) return false;
+    if (proj.stage !== "to_be_picked") return false;
+    // Project-mgmt dispatcher (e.g. Anandita): unrestricted across the whole
+    // to_be_picked queue regardless of their own team — mirrors the DB's
+    // can_dispatch_pickup() department branch exactly.
+    if (isProjectMgmtDispatcher(me)) return true;
+    if (!["tech_spoc", "development"].includes(me.team)) return false;
     if (!hasCoarseTeamLeak(me, PEOPLE)) return true;
     // Manager-assign model: a coarse-team-leak actor may only pick up new
     // work for their OWN reports, and only if they actually have any on the
@@ -195,14 +200,43 @@ export function can(action: Action, me: Person, proj?: Project): boolean {
   return isMine(me, proj);                           // otherwise: only the team in-court acts
 }
 
+/** Explicit, data-driven "Project mgmt" dispatch role (department, not a
+ *  hardcoded person) — e.g. Anandita. Unlike a subtree-scoped manager, a
+ *  dispatcher has no engineering reports of their own; they triage the
+ *  WHOLE to_be_picked queue and route each item to the right branch.
+ *  Mirrors the DB's can_dispatch_pickup() department check exactly. */
+export function isProjectMgmtDispatcher(me: Person): boolean {
+  return me.department === "Project mgmt";
+}
+
+/** Candidates for "Send to Tech Manager" (scoping -> to_be_picked): the
+ *  Tech-org dispatch points — SVP/VP branch heads (role='svp'), the CTO
+ *  (role='pmo' specifically on the tech_spoc team, distinct from the
+ *  generic leadership/PMO seat), and Project-mgmt dispatchers (e.g.
+ *  Anandita). Purely structural (role/team/department), no hardcoded
+ *  names — a new SVP or dispatcher shows up here with zero code changes.
+ *  They then redistribute within their own branch (SVPs, via the normal
+ *  subtree-scoped pickup flow) or across the whole queue (dispatchers). */
+export function techManagerCandidates(all: Person[]): Person[] {
+  return all.filter((p) =>
+    p.active !== false
+    && (p.role === "svp" || (p.role === "pmo" && p.team === "tech_spoc") || isProjectMgmtDispatcher(p))
+  );
+}
+
 /** Candidate pool for a "who exactly is this for" picker, for a transition
- *  landing on `team` out of `fromStage`. Ordinarily just everyone active on
- *  that team; for a coarse-team-leak manager assigning fresh to_be_picked
- *  work, narrows to their own reports on that team only — mirrors can()'s
- *  "pickup" gating so the picker never offers someone the write would reject. */
-export function candidatesForTeam(me: Person, all: Person[], team: TeamId, fromStage: StageId): Person[] {
+ *  out of `fromStage` landing on `toStage`/`team`. Special-cased for
+ *  "Send to Tech Manager" (see techManagerCandidates — team='tech_spoc'
+ *  candidates don't really exist as a flat pool any more). Otherwise
+ *  ordinarily everyone active on `team`; for a coarse-team-leak manager
+ *  assigning fresh to_be_picked work, narrows to their own reports on that
+ *  team only — mirrors can()'s "pickup" gating so the picker never offers
+ *  someone the write would reject. A Project-mgmt dispatcher (no subtree of
+ *  their own) intentionally falls through to the full unrestricted pool. */
+export function candidatesForTeam(me: Person, all: Person[], team: TeamId, fromStage: StageId, toStage: StageId): Person[] {
+  if (toStage === "to_be_picked") return techManagerCandidates(all);
   const pool = all.filter((p) => p.team === team && p.active !== false);
-  if (fromStage === "to_be_picked" && hasCoarseTeamLeak(me, all)) {
+  if (fromStage === "to_be_picked" && hasCoarseTeamLeak(me, all) && !isProjectMgmtDispatcher(me)) {
     const subtree = orgSubtreeIds(me, all);
     return pool.filter((p) => subtree.has(p.id));
   }

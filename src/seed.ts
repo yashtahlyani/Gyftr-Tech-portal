@@ -15,7 +15,7 @@ export const PEOPLE: Person[] = [
   { id: "u_yash",     name: "Yash Tahlyani", team: "product",     role: "member",     email: "yash.tahlyani@gyftr.net" },
   // ── Tech SPOC (managers) ──
   { id: "u_rajneesh", name: "Rajneesh",      team: "tech_spoc",   role: "pmo",        email: "rajneesh@gyftr.net" },     // CTO — sees everything
-  { id: "u_anandita", name: "Anandita",      team: "tech_spoc",   role: "lead",       email: "anandita@gyftr.net" },     // Tech SPOC — default recipient, assigns to everyone else below
+  { id: "u_anandita", name: "Anandita",      team: "tech_spoc",   role: "lead",       email: "anandita@gyftr.net", department: "Project mgmt" },     // Tech SPOC — default recipient, assigns to everyone else below (department mirrors the cloud dispatcher signal — see roles.ts's isProjectMgmtDispatcher)
   { id: "u_harshita", name: "Harshita",      team: "tech_spoc",   role: "member",     email: "harshita@gyftr.net" },
   { id: "u_mgr2",     name: "Deepak",        team: "tech_spoc",   role: "member",     email: "deepak@gyftr.net" },
   { id: "u_mgr3",     name: "Sameer",        team: "tech_spoc",   role: "member",     email: "sameer@gyftr.net" },

@@ -7,6 +7,7 @@ import { transition, updateSubtask, toggleSubtask } from "../store";
 import { daysBetween, fmtDate } from "../lib";
 import { Avatar, StatusPill, PriorityChip, AgingChip, OverdueTag, CeoNote } from "../ui";
 import { PEOPLE_BY_ID } from "../people";
+import { toast } from "../toast";
 
 export function MyQueue({ projects, me, onOpen }: { projects: Project[]; me: Person; onOpen: (id: string) => void }) {
   const mine = projects
@@ -73,9 +74,21 @@ export function MyQueue({ projects, me, onOpen }: { projects: Project[]; me: Per
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }} onClick={(e) => e.stopPropagation()}>
                     {canFwd && fwd && (
-                      <button className="btn subtle sm" onClick={() => transition(p.id, me.id, fwd, ownerForTransition(fwd, me))}>
-                        {fwd.label} <ArrowRight size={13} />
-                      </button>
+                      // "Send to Tech Manager" needs an explicit "who exactly is
+                      // this for" pick (SVP/CTO/dispatcher) — this quick-forward
+                      // shortcut has no way to ask that, and ownerForTransition's
+                      // leadOf() fallback would silently dump everything on
+                      // whichever one person it resolves to. Route to the
+                      // Drawer's picker instead of guessing.
+                      fwd.to === "to_be_picked" ? (
+                        <button className="btn subtle sm" onClick={() => { toast("Open the project to pick who on the Tech side this is for."); onOpen(p.id); }}>
+                          {fwd.label} <ArrowRight size={13} />
+                        </button>
+                      ) : (
+                        <button className="btn subtle sm" onClick={() => transition(p.id, me.id, fwd, ownerForTransition(fwd, me))}>
+                          {fwd.label} <ArrowRight size={13} />
+                        </button>
+                      )
                     )}
                     <button className="btn sm" onClick={() => onOpen(p.id)}>Open</button>
                   </div>
