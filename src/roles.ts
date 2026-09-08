@@ -67,9 +67,11 @@ export function isMine(me: Person, proj: Project): boolean {
     // departments) must be able to act on it at any stage, not just while it
     // happens to sit in the ONE team value that's personally theirs. Gated
     // on subtree membership, not team-court, so cross-branch isolation still
-    // holds. Mirrors the DB's p_upd subtree-reference branch exactly.
+    // holds. subtreeLeads(), not subtreeVisibleTo() — a subtask-only
+    // connection is too light to justify full-column edit rights. Mirrors
+    // the DB's p_upd subtree_leads() branch exactly.
     const subtree = orgSubtreeIds(me, PEOPLE);
-    return subtreeVisibleTo(proj, subtree);
+    return subtreeLeads(proj, subtree);
   }
   return ownerTeam(proj) === me.team;
 }
@@ -141,8 +143,17 @@ export function orgSubtreeIds(me: Person, all: Person[]): Set<string> {
  *  themself, which visibleTo already covers, so this only ever *adds*
  *  visibility for people who genuinely have descendants. */
 export function subtreeVisibleTo(proj: Project, subtree: Set<string>): boolean {
-  if ([proj.ownerId, proj.businessOwnerId, proj.techLeadId, proj.productSpocId].some((id) => id && subtree.has(id))) return true;
+  if (subtreeLeads(proj, subtree)) return true;
   return proj.subtasks.some((s) => s.assigneeId && subtree.has(s.assigneeId));
+}
+
+/** Narrower sibling of subtreeVisibleTo() — no subtask-assignee branch, only
+ *  the four PRIMARY project references. Mirrors the DB's subtree_leads()
+ *  exactly: a subtask is too light a connection to justify full-column edit
+ *  rights (isMine()), only viewing/light actions (subtreeVisibleTo(), used
+ *  by canHold/canAddAttachment, mirrors subtree_owns() and does include it). */
+export function subtreeLeads(proj: Project, subtree: Set<string>): boolean {
+  return [proj.ownerId, proj.businessOwnerId, proj.techLeadId, proj.productSpocId].some((id) => id && subtree.has(id));
 }
 
 /** Navigation is role-specific — contributors and overseers get different apps.

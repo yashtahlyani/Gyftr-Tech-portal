@@ -37,9 +37,12 @@ create table people (
   -- false = retired from the directory (e.g. a superseded hierarchy import).
   -- Row stays for FK/history integrity — old projects still resolve the
   -- name — but they must never appear as an assignment/owner candidate.
-  -- Filtered out client-side (roles.ts leadOf, Drawer.tsx/FilterBar.tsx
-  -- pickers); not an RLS concern since it's a UI-candidate-list rule, not
-  -- an authorization rule.
+  -- Filtered out client-side in every *assignment* picker (roles.ts leadOf,
+  -- every candidate list in Drawer.tsx); not an RLS concern since it's a
+  -- UI-candidate-list rule, not an authorization rule. Deliberately NOT
+  -- filtered in FilterBar.tsx's "filter projects by owner" dropdown — that's
+  -- for finding a project by its (possibly retired) owner, a legitimate
+  -- historical-search use, not an assignment surface.
   active      boolean not null default true
 );
 
@@ -257,41 +260,75 @@ create table attachments (
   by_id uuid references people(id), at timestamptz not null default now()
 );
 
+-- Shared by can_see/can_act/p_sel/p_upd (hold branch, and its WITH CHECK)
+-- wherever a coarse-team-leak actor needs "does my own subtree connect to
+-- this project at all" — every person-reference (owner/business_owner/
+-- tech_lead/product_spoc) OR a subtask assignee. One definition instead of
+-- duplicating this OR-chain at every call site keeps them from drifting
+-- apart (they did — see git history: can_act()'s inline copy omitted the
+-- subtask-assignee case that can_see()'s already had, so a coarse-team-leak
+-- actor connected to a project only via a subtask could see it but not
+-- attach a file to it). NOT used by p_upd's/enforce_project_update_scope's
+-- full-edit branch or h_ins — those need the narrower subtree_leads()
+-- below, since a subtask is too light a connection to justify editing
+-- every column.
+create or replace function subtree_owns(pid uuid) returns boolean language sql stable security definer as $$
+  select exists (
+    select 1 from projects p where p.id = pid and (
+      p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
+      or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
+      or exists (select 1 from subtasks st where st.project_id = p.id and st.assignee_id = any(my_subtree_ids()))
+    )
+  );
+$$;
+-- Narrower sibling of subtree_owns() — NO subtask-assignee branch. A subtask
+-- is a light, single-item connection (matches how a non-hierarchy subtask
+-- assignee only ever gets visibility + rights over their own subtask, never
+-- the whole project); it should unlock viewing and light actions (comments,
+-- attachments — subtree_owns() is right for those), but not full mutation of
+-- every column (title, priority, stage, owner_id, blocked...). subtree_leads()
+-- is for that stronger claim: one of the four PRIMARY project references
+-- (owner/business_owner/tech_lead/product_spoc) falls in the caller's
+-- subtree — i.e. this is fundamentally their branch's own work, not merely
+-- something a report was tagged on. Used by p_upd's/enforce_project_update_
+-- scope's full-edit branch and h_ins. (Caught live via self-review: an
+-- earlier version reused subtree_owns() there, which meant a manager whose
+-- ONLY connection to a project was a report's subtask could edit anything on
+-- it — title, stage, owner_id, everything.)
+create or replace function subtree_leads(pid uuid) returns boolean language sql stable security definer as $$
+  select exists (
+    select 1 from projects p where p.id = pid and (
+      p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
+      or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
+    )
+  );
+$$;
+
 -- Can the current user SEE this project? Overseer, global-view grant, team
 -- involved (unless has_coarse_team_leak() — see that function's comment: a
 -- Tech-hierarchy person's team-court is too coarse to trust on its own), a
 -- manager's to_be_picked queue for their own reports' team, or —
--- structurally, for anyone with reports (any depth, any tier) — any
--- person-reference on the project falls in their subtree.
+-- structurally, for anyone with reports (any depth, any tier) — subtree_owns().
 create or replace function can_see(pid uuid) returns boolean language sql stable security definer as $$
   select is_overseer() or sees_all_projects() or exists (
     select 1 from projects p where p.id = pid and (
       (my_team() = any(p.involved_teams) and not has_coarse_team_leak())
       or (is_manager() and p.stage = 'to_be_picked'
           and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
-      or p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
-      or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
-      or exists (select 1 from subtasks st where st.project_id = p.id and st.assignee_id = any(my_subtree_ids()))
     )
-  );
+  ) or subtree_owns(pid);
 $$;
 -- Can they ACT on it? Their team currently holds the ball (unless
 -- has_coarse_team_leak() — same reasoning as p_sel/p_upd), or PMO, or —
--- for a coarse-team-leak actor — full control over anyone in their own
--- subtree's work regardless of which coarse team currently holds court
--- (an SVP overseeing dev+qa+design sub-departments must be able to act at
--- every stage, not just the one team value that happens to be personally
--- theirs).
+-- for a coarse-team-leak actor — subtree_owns(): full control over anyone
+-- in their own subtree's work regardless of which coarse team currently
+-- holds court (an SVP overseeing dev+qa+design sub-departments must be
+-- able to act at every stage, not just the one team value that happens to
+-- be personally theirs).
 create or replace function can_act(pid uuid) returns boolean language sql stable security definer as $$
   select is_pmo() or exists (
-    select 1 from projects p where p.id = pid and (
-      (my_team() = p.owner_team and not has_coarse_team_leak())
-      or (has_coarse_team_leak() and (
-        p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
-        or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
-      ))
-    )
-  );
+    select 1 from projects p where p.id = pid and my_team() = p.owner_team and not has_coarse_team_leak()
+  ) or (has_coarse_team_leak() and subtree_owns(pid));
 $$;
 
 -- ── RLS ──
@@ -331,9 +368,7 @@ create policy p_sel on projects for select using (
   or (my_team() = any(involved_teams) and not has_coarse_team_leak())
   or (is_manager() and stage = 'to_be_picked'
       and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
-  or owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
-  or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
-  or exists (select 1 from subtasks st where st.project_id = projects.id and st.assignee_id = any(my_subtree_ids()))
+  or subtree_owns(id)
 );
 create policy p_ins on projects for insert with check ( is_pmo() or my_team() in ('business','product','tech_spoc') );
 -- Last USING branch: "any team except Business, already involved" may reach
@@ -347,13 +382,32 @@ create policy p_ins on projects for insert with check ( is_pmo() or my_team() in
 -- Every "my_team() = owner_team"/"my_team() = any(involved_teams)"-style
 -- branch below is paired with "and not has_coarse_team_leak()" for the same
 -- reason as p_sel above: a Tech-hierarchy person's team-court is too coarse
--- to grant action rights on its own. Their equivalent branch is deliberately
--- FULL control — owner_id/etc falling in their own subtree, with NO team
--- match required — so an SVP overseeing a branch that spans multiple coarse
--- team_id values (dev/qa/design sub-departments) can act on their people's
--- work at every stage, not just while it happens to sit in the one team
--- value that's personally theirs. (Or, for to_be_picked, being a manager
--- assigning to a report on the receiving team.)
+-- to grant action rights on its own. Their equivalent full-edit branch is
+-- deliberately FULL control via subtree_leads() — no team match required —
+-- so an SVP overseeing a branch that spans multiple coarse team_id values
+-- (dev/qa/design sub-departments) can act on their people's work at every
+-- stage, not just while it happens to sit in the one team value that's
+-- personally theirs. (Or, for to_be_picked, being a manager assigning to a
+-- report on the receiving team.) subtree_leads(), not subtree_owns() — a
+-- subtask-only connection is too light to justify editing every column;
+-- see subtree_owns()'s comment above.
+--
+-- WITH CHECK also waves through has_coarse_team_leak() outright, rather than
+-- re-deriving subtree_owns()/subtree_leads() against the NEW row: WITH CHECK
+-- evaluates post-update, so re-checking a reference column against the row
+-- being written breaks the exact edit that changes that column — e.g. an
+-- SVP reassigning tech_lead_id away from their own subtree would find, after
+-- their own write, that subtree_owns() no longer holds for the new row, and
+-- get rejected performing the very reassignment their access was built to
+-- allow. Same reasoning as this policy's existing my_team()=any(involved_
+-- teams) branch (see the block comment above p_upd) — real gating already
+-- happened in USING (evaluated against the OLD row) and is independently
+-- re-verified by enforce_project_update_scope() below (also OLD-row-based);
+-- WITH CHECK doesn't need its own copy of that check. Verified live both
+-- ways: a design-branch manager marking hold on a report's still-in-scoping
+-- project (involved_teams never included 'design' — no stage is ever owned
+-- by design) succeeds; an unrelated hierarchy member's blind by-ID write to
+-- the same row still silently affects zero rows. See git history.
 create policy p_upd on projects for update
   using (
     is_pmo()
@@ -361,25 +415,20 @@ create policy p_upd on projects for update
     or (stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
     or (is_manager() and stage = 'to_be_picked'
         and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
-    or (has_coarse_team_leak() and (
-      owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
-      or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
-    ))
+    or (has_coarse_team_leak() and subtree_leads(id))
     or (my_role() = 'lead' and my_team() = 'product')
     or (
       my_role() not in ('leadership', 'svp') and my_team() <> 'business'
       and (
         (my_team() = any(involved_teams) and not has_coarse_team_leak())
-        or (has_coarse_team_leak() and (
-          owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
-          or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
-        ))
+        or (has_coarse_team_leak() and subtree_owns(id))
       )
     )
   )
   with check (
     is_pmo() or my_team() = any(involved_teams)
     or (my_role() = 'lead' and my_team() = 'product')
+    or has_coarse_team_leak()
   );
 create policy p_del on projects for delete using ( is_pmo() );
 
@@ -434,10 +483,7 @@ begin
     or (old.stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
     or (is_manager() and old.stage = 'to_be_picked'
         and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
-    or (has_coarse_team_leak() and (
-      old.owner_id = any(my_subtree_ids()) or old.business_owner_id = any(my_subtree_ids())
-      or old.tech_lead_id = any(my_subtree_ids()) or old.product_spoc_id = any(my_subtree_ids())
-    ))
+    or (has_coarse_team_leak() and subtree_leads(old.id))
   then
     return new;
   end if;
@@ -469,14 +515,11 @@ begin
   -- Parallel carve-out for the p_upd hold branch: any non-Business team
   -- already involved, acting outside their own court, may change ONLY the
   -- hold columns. Leadership/SVP excluded (same reasoning as the RLS policy).
-  -- has_coarse_team_leak() actors use subtree-reference in place of plain
+  -- has_coarse_team_leak() actors use subtree_owns() in place of plain
   -- team-involvement, same reasoning as everywhere else in this trigger.
   if my_role() not in ('leadership', 'svp') and my_team() <> 'business' and (
        (my_team() = any(old.involved_teams) and not has_coarse_team_leak())
-       or (has_coarse_team_leak() and (
-         old.owner_id = any(my_subtree_ids()) or old.business_owner_id = any(my_subtree_ids())
-         or old.tech_lead_id = any(my_subtree_ids()) or old.product_spoc_id = any(my_subtree_ids())
-       ))
+       or (has_coarse_team_leak() and subtree_owns(old.id))
      ) then
     if new.title is distinct from old.title
       or new.brd is distinct from old.brd
@@ -588,10 +631,7 @@ create policy h_sel on stage_history for select using ( can_see(project_id) );
 create policy h_ins on stage_history for insert with check (
   is_pmo()
   or exists (select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams) and not has_coarse_team_leak())
-  or exists (select 1 from projects p where p.id = project_id and has_coarse_team_leak() and (
-      p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
-      or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
-    ))
+  or (has_coarse_team_leak() and subtree_leads(project_id))
 );
 
 -- comments: anyone who can SEE the project may comment (incl. leadership); only in-court/pmo can resolve
