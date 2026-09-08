@@ -275,10 +275,22 @@ create or replace function can_see(pid uuid) returns boolean language sql stable
     )
   );
 $$;
--- Can they ACT on it? (their team currently holds the ball, or PMO)
+-- Can they ACT on it? Their team currently holds the ball (unless
+-- has_coarse_team_leak() — same reasoning as p_sel/p_upd), or PMO, or —
+-- for a coarse-team-leak actor — full control over anyone in their own
+-- subtree's work regardless of which coarse team currently holds court
+-- (an SVP overseeing dev+qa+design sub-departments must be able to act at
+-- every stage, not just the one team value that happens to be personally
+-- theirs).
 create or replace function can_act(pid uuid) returns boolean language sql stable security definer as $$
   select is_pmo() or exists (
-    select 1 from projects p where p.id = pid and my_team() = p.owner_team
+    select 1 from projects p where p.id = pid and (
+      (my_team() = p.owner_team and not has_coarse_team_leak())
+      or (has_coarse_team_leak() and (
+        p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
+        or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
+      ))
+    )
   );
 $$;
 
@@ -335,9 +347,13 @@ create policy p_ins on projects for insert with check ( is_pmo() or my_team() in
 -- Every "my_team() = owner_team"/"my_team() = any(involved_teams)"-style
 -- branch below is paired with "and not has_coarse_team_leak()" for the same
 -- reason as p_sel above: a Tech-hierarchy person's team-court is too coarse
--- to grant action rights on its own. Their equivalent branches instead key
--- off owner_id/etc falling in their own subtree, or (for to_be_picked) being
--- a manager assigning to a report on the receiving team.
+-- to grant action rights on its own. Their equivalent branch is deliberately
+-- FULL control — owner_id/etc falling in their own subtree, with NO team
+-- match required — so an SVP overseeing a branch that spans multiple coarse
+-- team_id values (dev/qa/design sub-departments) can act on their people's
+-- work at every stage, not just while it happens to sit in the one team
+-- value that's personally theirs. (Or, for to_be_picked, being a manager
+-- assigning to a report on the receiving team.)
 create policy p_upd on projects for update
   using (
     is_pmo()
@@ -345,7 +361,10 @@ create policy p_upd on projects for update
     or (stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
     or (is_manager() and stage = 'to_be_picked'
         and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
-    or (owner_id = any(my_subtree_ids()) and my_team() = owner_team)
+    or (has_coarse_team_leak() and (
+      owner_id = any(my_subtree_ids()) or business_owner_id = any(my_subtree_ids())
+      or tech_lead_id = any(my_subtree_ids()) or product_spoc_id = any(my_subtree_ids())
+    ))
     or (my_role() = 'lead' and my_team() = 'product')
     or (
       my_role() not in ('leadership', 'svp') and my_team() <> 'business'
@@ -415,7 +434,10 @@ begin
     or (old.stage = 'to_be_picked' and my_team() = 'development' and not has_coarse_team_leak())
     or (is_manager() and old.stage = 'to_be_picked'
         and exists (select 1 from people sp where sp.id = any(my_subtree_ids()) and sp.team in ('tech_spoc','development')))
-    or (old.owner_id = any(my_subtree_ids()) and my_team() = old.owner_team)
+    or (has_coarse_team_leak() and (
+      old.owner_id = any(my_subtree_ids()) or old.business_owner_id = any(my_subtree_ids())
+      or old.tech_lead_id = any(my_subtree_ids()) or old.product_spoc_id = any(my_subtree_ids())
+    ))
   then
     return new;
   end if;
@@ -559,8 +581,17 @@ create policy h_sel on stage_history for select using ( can_see(project_id) );
 -- first, the outgoing team's own history entry for the handoff they just made
 -- gets rejected by RLS. involved_teams only ever grows and already contained
 -- the outgoing team before they acted, so it's race-proof.
+-- The my_team()=any(involved_teams) branch is paired with "and not
+-- has_coarse_team_leak()" (same reasoning as p_sel/p_upd); a coarse-team-leak
+-- actor instead gets a subtree-reference branch, same shape as can_act()
+-- but NOT can_act() itself, for the race-condition reason above.
 create policy h_ins on stage_history for insert with check (
-  is_pmo() or exists ( select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams) )
+  is_pmo()
+  or exists (select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams) and not has_coarse_team_leak())
+  or exists (select 1 from projects p where p.id = project_id and has_coarse_team_leak() and (
+      p.owner_id = any(my_subtree_ids()) or p.business_owner_id = any(my_subtree_ids())
+      or p.tech_lead_id = any(my_subtree_ids()) or p.product_spoc_id = any(my_subtree_ids())
+    ))
 );
 
 -- comments: anyone who can SEE the project may comment (incl. leadership); only in-court/pmo can resolve
@@ -572,7 +603,7 @@ create policy c_upd on comments for update using ( can_act(project_id) or by_id 
 create policy a_sel on attachments for select using ( can_see(project_id) );
 create policy a_ins on attachments for insert with check (
   can_act(project_id) or exists (
-    select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams)
+    select 1 from projects p where p.id = project_id and my_team() = any(p.involved_teams) and not has_coarse_team_leak()
   )
 );
 

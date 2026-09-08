@@ -61,14 +61,17 @@ export function ownerTeam(p: Project): TeamId {
  *  the named assignee grants visibility (see visibleTo), never cross-team action. */
 export function isMine(me: Person, proj: Project): boolean {
   if (proj.stage === "live") return false;
-  if (ownerTeam(proj) !== me.team) return false;
-  if (!hasCoarseTeamLeak(me, PEOPLE)) return true;
-  // Coarse-team-leak actors: in-court isn't enough on its own — the project
-  // must actually be assigned within their own subtree (they're the owner,
-  // or the owner reports to them at any depth). Mirrors the DB's p_upd
-  // "owner_id = any(my_subtree_ids()) and my_team() = owner_team" branch.
-  const subtree = orgSubtreeIds(me, PEOPLE);
-  return !!proj.ownerId && subtree.has(proj.ownerId);
+  if (hasCoarseTeamLeak(me, PEOPLE)) {
+    // Full control over anyone in your own subtree's work — an SVP overseeing
+    // a branch that spans multiple coarse team_id values (dev/qa/design sub-
+    // departments) must be able to act on it at any stage, not just while it
+    // happens to sit in the ONE team value that's personally theirs. Gated
+    // on subtree membership, not team-court, so cross-branch isolation still
+    // holds. Mirrors the DB's p_upd subtree-reference branch exactly.
+    const subtree = orgSubtreeIds(me, PEOPLE);
+    return subtreeVisibleTo(proj, subtree);
+  }
+  return ownerTeam(proj) === me.team;
 }
 
 /** Every team that has been (or is) part of a project's journey. Keyed off the
@@ -234,6 +237,10 @@ export function canEditStageTarget(me: Person, proj: Project, stage: StageId): b
 export function canAddAttachment(me: Person, proj: Project): boolean {
   if (isReadOnly(me)) return false;
   if (me.role === "pmo") return true;
+  if (hasCoarseTeamLeak(me, PEOPLE)) {
+    const subtree = orgSubtreeIds(me, PEOPLE);
+    return subtreeVisibleTo(proj, subtree);
+  }
   return ownerTeam(proj) === me.team || teamsInvolved(proj).has(me.team);
 }
 
