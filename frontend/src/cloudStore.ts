@@ -99,7 +99,6 @@ async function fetchAll() {
   }
 }
 
-let pollHandle: ReturnType<typeof setInterval> | null = null;
 const POLL_MS = 7_000;
 
 let started = false;
@@ -109,9 +108,10 @@ function ensureStarted() {
   fetchAll();
 
   // No AWS realtime equivalent without extra infra (see file header) — poll
-  // instead. Only runs while at least one component is mounted/listening;
-  // see stopPollIfIdle() below.
-  pollHandle = setInterval(fetchAll, POLL_MS);
+  // instead, for the lifetime of the tab. `started` above means this only
+  // ever fires once (no idle/unmount teardown exists — nothing here ever
+  // calls clearInterval), so the returned handle has nothing to do with it.
+  setInterval(fetchAll, POLL_MS);
 
   // A profile switch (sign-out then sign-in as someone else) means a
   // different Cognito identity and a different server-side visibility slice.

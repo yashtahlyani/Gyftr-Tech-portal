@@ -30,7 +30,13 @@ import type { SubtaskPatch } from "../cloudStore";
 import { Avatar, StatusPill, PriorityChip, AgingChip, OverdueTag } from "../ui";
 
 const DOC_KINDS: DocKind[] = ["BRD", "PRD", "Figma", "HTML", "Doc"];
-const kindIcon = (k: string) => (k === "forward" ? Hand : k === "reopen" ? RotateCcw : CornerUpLeft);
+// Renders the icon element directly (rather than returning a component
+// reference to assign to a capitalised variable) so this stays a plain value
+// pick, not a "component defined during render" — see TransitionButton below.
+const kindIcon = (k: string, size: number) => {
+  const IconForKind = k === "forward" ? Hand : k === "reopen" ? RotateCcw : CornerUpLeft;
+  return <IconForKind size={size} />;
+};
 
 /** A person `<select>` with an inline search filter once the pool is big
  *  enough that scrolling a bare dropdown stops being usable. Each option
@@ -80,7 +86,6 @@ function TransitionButton({
     const def = ownerForTransition(spec, me);
     return candidates.some((p) => p.id === def) ? def : candidates[0]?.id ?? "";
   });
-  const Icon = kindIcon(spec.kind);
   return (
     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
       {candidates.length > 1 && (
@@ -92,7 +97,7 @@ function TransitionButton({
         />
       )}
       <button className={`btn ${primary ? "primary" : "sm"} ${danger ? "danger" : ""}`} style={{ flex: "none" }} onClick={() => onFire(spec, to)}>
-        {primary ? <>{spec.label} <ArrowRight size={14} /></> : <><Icon size={14} /> {spec.label}</>}
+        {primary ? <>{spec.label} <ArrowRight size={14} /></> : <>{kindIcon(spec.kind, 14)} {spec.label}</>}
       </button>
     </div>
   );

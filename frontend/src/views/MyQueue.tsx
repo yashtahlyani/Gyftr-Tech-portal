@@ -113,7 +113,7 @@ export function MyQueue({ projects, me, onOpen }: { projects: Project[]; me: Per
         ) : (
           <div className="grid stagger" style={{ gridTemplateColumns: "1fr" }}>
             {mySubtasks.map(({ sub, proj }) => (
-              <SubtaskQueueRow key={sub.id} sub={sub} proj={proj} me={me} onOpen={onOpen} />
+              <SubtaskQueueRow key={sub.id} sub={sub} proj={proj} onOpen={onOpen} />
             ))}
           </div>
         )}
@@ -122,10 +122,9 @@ export function MyQueue({ projects, me, onOpen }: { projects: Project[]; me: Per
   );
 }
 
-function SubtaskQueueRow({ sub, proj, me, onOpen }: {
+function SubtaskQueueRow({ sub, proj, onOpen }: {
   sub: import("../types").SubTask;
   proj: Project;
-  me: Person;
   onOpen: (id: string) => void;
 }) {
   const [editingPromised, setEditingPromised] = useState(false);
