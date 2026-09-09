@@ -67,7 +67,8 @@ runs in UAT and production. See `backend/.env.example` for the full list:
 | `PORT` | defaults to `8978` |
 | `AWS_SECRET_NAME` | **preferred.** Secrets Manager id, e.g. `gyftr/tech/db` |
 | `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` | used only when `AWS_SECRET_NAME` is unset |
-| `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` / `COGNITO_REGION` | required — `middleware/auth.js` exits at boot without the first two |
+| `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` | required — `middleware/auth.js` exits at boot without these two (the pool id's `ap-south-1_…` prefix is enough for it to find the right JWKS, so it needs no separate region variable) |
+| `COGNITO_REGION` | optional, backend does not read it — only `scripts/lib.mjs`'s admin tooling does (falls back to `AWS_REGION`, then `ap-south-1`) |
 | `ATTACHMENTS_BUCKET` | optional — private S3 bucket; link-only attachments work without it |
 | `FRONTEND_URL` | the CORS allow-list. Never `*` |
 | `NODE_ENV=production` | enables TLS to RDS |
