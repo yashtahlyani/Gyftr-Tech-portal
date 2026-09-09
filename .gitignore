@@ -8,3 +8,9 @@ dist
 .vercel
 tsconfig.tsbuildinfo
 supabase/.temp
+
+# Real org directory used by scripts/onboard.mjs / scripts/seed.mjs — this
+# repository is public, and a real corporate directory of names + working
+# email addresses is exactly what gets scraped for phishing. See
+# scripts/roster.example.json.
+scripts/roster.json

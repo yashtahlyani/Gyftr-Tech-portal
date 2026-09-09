@@ -1,0 +1,17 @@
+node_modules
+dist
+dist-ssr
+npm-debug.log
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.vscode
+.idea
+*.md
+*.local
+
+# NOTE: public/ is deliberately NOT ignored — it ships static assets Vite
+# copies into dist/ (see index.html). (The build context is ./frontend, so
+# backend/, scripts/, infra/, supabase/ are already outside it.)

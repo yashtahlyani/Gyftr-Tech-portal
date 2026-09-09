@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Copy this to scripts/roster.json and fill in the real org.",
+    "roster.json is GITIGNORED on purpose: this repository is public, and a",
+    "real corporate directory (names + working email addresses) is exactly",
+    "what gets scraped for phishing. Never commit the real file.",
+    "",
+    "team: business | product | tech_spoc | development | design | qa | partner | leadership",
+    "role: member | lead | pmo | leadership | svp  (defaults to 'member' if omitted)",
+    "email: must be unique. The schema enforces it, and auth lowercases it.",
+    "department: optional, purely descriptive (shown in the UI, not used for",
+    "  authorization — see backend/sql/01_schema.sql's comment on `people.department`).",
+    "managerEmail: optional. Resolved to manager_id in a second pass after",
+    "  every row exists, so a manager listed later in the file (or already in",
+    "  the database) still resolves correctly. Drives subtree-based project",
+    "  visibility — see backend/authz.js's orgSubtreeIds().",
+    "seesAllProjects: optional boolean, default false. An explicit, named",
+    "  'sees every project' grant — data-driven, not a hierarchy derivation."
+  ],
+  "people": [
+    { "name": "Example Business Lead", "email": "example.business@gyftr.net", "team": "business", "role": "lead", "department": "Business" },
+    { "name": "Example Business Member", "email": "example.member@gyftr.net", "team": "business", "role": "member", "department": "Business", "managerEmail": "example.business@gyftr.net" },
+    { "name": "Example Tech SPOC", "email": "example.spoc@gyftr.net", "team": "tech_spoc", "role": "pmo", "department": "Technology", "seesAllProjects": true }
+  ]
+}
