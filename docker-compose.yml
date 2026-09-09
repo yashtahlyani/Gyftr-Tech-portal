@@ -1,0 +1,120 @@
+# Gyftr Tech Portal — local / single-host orchestration
+# Frontend and backend are separate images with separate ports/URLs, matching
+# the Marketing, Legal and CEO Office portals.
+#
+# Usage:
+#   cp .env.example .env   # fill in values
+#   docker compose up --build
+#
+# Prod URLs: frontend https://tech.gyftr.net | backend https://tech-api.gyftr.net
+# Local:     frontend http://localhost:8979  | backend http://localhost:8978
+#
+# Port map across the family (keep these distinct so they can share a host):
+#   Marketing   frontend 7867  backend 7878
+#   Legal       frontend 7979  backend 7978
+#   CEO Office  frontend 7868  backend 7869
+#   Tech Portal frontend 8979  backend 8978
+#
+# Backend port (8978) is fixed by backend/.env.example / backend/server.js.
+# Frontend port (8979) matches this repo's dev-server convention (see
+# frontend/vite.config.ts) but frontend/Dockerfile did not exist yet when
+# this file was written — reconcile the two if the frontend build ends up
+# serving on a different port once its Dockerfile lands.
+#
+# A local `postgres` service is included so the stack runs end to end without
+# an RDS instance. It is for development only — see the comment on it.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gyftr-tech-postgres
+    # DEVELOPMENT ONLY. Deployed environments use RDS, and the backend reaches
+    # it via AWS_SECRET_NAME rather than these variables. Do not point a real
+    # environment at this container: the volume below is the only copy of the
+    # data and nothing backs it up.
+    environment:
+      POSTGRES_DB: gyftr_tech
+      POSTGRES_USER: gyftr_admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-localdev}
+    ports:
+      - "5443:5432"   # non-default host port so it cannot collide with a local Postgres or a sibling portal's compose stack
+    volumes:
+      - tech-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gyftr_admin -d gyftr_tech"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    platform: linux/arm64
+    build:
+      context: ./backend
+    image: gyftr-tech-portal-api
+    container_name: gyftr-tech-portal-backend
+    ports:
+      - "8978:8978"
+    env_file:
+      - .env
+    environment:
+      PORT: 8978
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8979}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: gyftr_tech
+      DB_USER: gyftr_admin
+      DB_PASSWORD: ${DB_PASSWORD:-localdev}
+      # NOT production. Turning this on would enable TLS to Postgres, which
+      # the local container does not serve — and the backend applies its
+      # migrations (backend/sql/*.sql) on boot either way.
+      NODE_ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8978/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    platform: linux/arm64
+    build:
+      context: ./frontend
+      args:
+        # Vite inlines these at BUILD time. Setting them as `environment:`
+        # would do nothing — the bundle is already compiled by then.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8978}
+        VITE_COGNITO_USER_POOL_ID: ${VITE_COGNITO_USER_POOL_ID}
+        VITE_COGNITO_CLIENT_ID: ${VITE_COGNITO_CLIENT_ID}
+    image: gyftr-tech-portal-frontend
+    container_name: gyftr-tech-portal-frontend
+    ports:
+      - "8979:8979"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8979/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  tech-pgdata:

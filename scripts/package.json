@@ -1,0 +1,21 @@
+{
+  "name": "gyftr-tech-portal-scripts",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Admin scripts (direct database + Cognito access): onboard people, seed demo data, one-time Supabase-to-RDS migration.",
+  "scripts": {
+    "seed": "node seed.mjs",
+    "create-person": "node create-person.mjs",
+    "onboard": "node onboard.mjs",
+    "force-password-reset": "node force-password-reset.mjs",
+    "doctor": "node doctor.mjs",
+    "migrate-db": "node aws-migration/migrate-db.mjs",
+    "create-cognito-users": "node aws-migration/create-cognito-users.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.550.0",
+    "dotenv": "^16.4.5",
+    "pg": "^8.11.3"
+  }
+}

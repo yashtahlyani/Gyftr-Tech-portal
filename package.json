@@ -1,31 +1,20 @@
 {
   "name": "gyftr-tech-portal",
   "private": true,
-  "version": "0.1.0",
+  "version": "2.0.0",
+  "description": "Gyftr Tech Portal — React frontend + Express API on AWS (ECS/RDS/Cognito/S3)",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview",
-    "lint": "eslint ."
-  },
-  "dependencies": {
-    "@fontsource-variable/bricolage-grotesque": "^5.2.10",
-    "@fontsource-variable/hanken-grotesk": "^5.2.8",
-    "@fontsource-variable/inter": "^5.2.8",
-    "@fontsource-variable/jetbrains-mono": "^5.2.8",
-    "@fontsource-variable/sora": "^5.2.8",
-    "@supabase/supabase-js": "^2.107.0",
-    "lucide-react": "^0.469.0",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "recharts": "^3.8.1"
-  },
-  "devDependencies": {
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.1",
-    "typescript": "^5.7.3",
-    "vite": "^8.0.12"
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "build:frontend": "npm run build --prefix frontend",
+    "lint": "npm run lint --prefix frontend",
+    "install:all": "npm install --prefix frontend && npm install --prefix backend && npm install --prefix scripts",
+    "test": "node --test \"tests/*.test.mjs\"",
+    "seed": "npm --prefix scripts run seed",
+    "onboard": "npm --prefix scripts run onboard",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "doctor": "npm --prefix scripts run doctor"
   }
 }

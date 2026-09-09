@@ -1,0 +1,84 @@
+version: 0.2
+
+# CodeBuild buildspec — Gyftr Tech Portal Frontend
+# Buildspec path: frontend/buildspec.yml
+# Project settings:
+#   - Environment: privileged = true (Docker)
+#   - Compute: ARM / Graviton (linux/arm64) to match BASE_IMAGE
+#   - Env vars set on the CodeBuild project:
+#       FRONTEND_IMAGE_REPO_NAME, FRONTEND_ECS_CONTAINER,
+#       VITE_API_URL, VITE_COGNITO_USER_POOL_ID, VITE_COGNITO_CLIENT_ID
+#
+# VITE_* values are baked into the JS bundle at build time — they must be
+# passed as --build-arg here, not set on the running container. Setting them
+# on the ECS task definition does nothing; the bundle is already compiled.
+#
+# There is a SECOND buildspec for this product: backend/buildspec.yml. Both
+# images must be built and deployed. Before the AWS migration this repo used
+# Supabase for data and Vercel for hosting; it no longer does.
+
+env:
+  shell: bash
+  variables:
+    BASE_IMAGE: 653380732738.dkr.ecr.ap-south-1.amazonaws.com/node-24.18.0-alpine3.24-arm:node-24.18.0-alpine3.24-arm
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to Amazon ECR..."
+      - export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 653380732738.dkr.ecr.ap-south-1.amazonaws.com
+      - IMAGE_TAG=v1.$CODEBUILD_BUILD_NUMBER
+      - export FRONTEND_IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$FRONTEND_IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo "Frontend image -> $FRONTEND_IMAGE_URI"
+      - |
+        # Fail fast rather than shipping an app that loads and then cannot sign
+        # anybody in. Each of these produces a different, equally confusing
+        # symptom if missing, so they are checked by name.
+        MISSING=""
+        [ -z "$VITE_API_URL" ]               && MISSING="$MISSING VITE_API_URL"
+        [ -z "$VITE_COGNITO_USER_POOL_ID" ]  && MISSING="$MISSING VITE_COGNITO_USER_POOL_ID"
+        [ -z "$VITE_COGNITO_CLIENT_ID" ]     && MISSING="$MISSING VITE_COGNITO_CLIENT_ID"
+        if [ -n "$MISSING" ]; then
+          echo "ERROR: missing required build variables:$MISSING"
+          echo "Without these the bundle compiles but the app cannot reach its API or its user pool."
+          exit 1
+        fi
+
+  build:
+    commands:
+      - echo "Build started on $(date)"
+      - |
+        docker build -t $FRONTEND_IMAGE_URI \
+          --build-arg BASE_IMAGE=$BASE_IMAGE \
+          --build-arg VITE_API_URL=$VITE_API_URL \
+          --build-arg VITE_COGNITO_USER_POOL_ID=$VITE_COGNITO_USER_POOL_ID \
+          --build-arg VITE_COGNITO_CLIENT_ID=$VITE_COGNITO_CLIENT_ID \
+          ./frontend
+      - |
+        # The bundle is public: anyone can read it. Nothing that grants access
+        # may be compiled into it. The Cognito pool ids above are identifiers,
+        # not credentials — but a database password, an app-client SECRET or an
+        # AWS access key would all be catastrophic here, and all three are easy
+        # to paste into a VITE_ variable by mistake.
+        #
+        # This runs against the built image rather than the workspace, so it
+        # sees exactly what would ship.
+        if docker run --rm --entrypoint sh $FRONTEND_IMAGE_URI -c \
+             "grep -rlE 'AKIA[0-9A-Z]{16}|service_role|CLIENT_SECRET|DB_PASSWORD' /app/dist" 2>/dev/null; then
+          echo "ERROR: a credential appears to be compiled into the public bundle."
+          exit 1
+        fi
+        echo "No credentials found in the bundle."
+
+  post_build:
+    commands:
+      - echo "Build completed on $(date)"
+      - docker push $FRONTEND_IMAGE_URI
+      - printf '[{"name":"%s","imageUri":"%s"}]' "$FRONTEND_ECS_CONTAINER" "$FRONTEND_IMAGE_URI" > imagedefinitions.json
+      - cat imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
